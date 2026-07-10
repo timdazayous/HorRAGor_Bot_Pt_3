@@ -150,6 +150,7 @@ dessinée à la main) est disponible dans la
 | Monitoring agent | **Langfuse** (auto-hébergé) |
 | Métriques | **Prometheus** + **Grafana** |
 | Supervision disponibilité | **Uptime Kuma** |
+| Authentification | JWT (`pyjwt`) + refresh tokens opaques, mots de passe hashés (`bcrypt`) |
 | Logs | **Loguru** (interception unifiée de tout `logging` stdlib) |
 | Tests | `pytest` + `pytest-cov` (couverture ≥ 80 %) |
 | Documentation | **Sphinx** (autodoc + OpenAPI + Mermaid) |
@@ -177,8 +178,8 @@ GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxx
 SUPABASE_DB_URL=postgresql://postgres.TON_PROJET:PASSWORD@aws-0-xx-xxxx-1.pooler.supabase.com:6543/postgres
 ```
 
-> Utilise l'URL du **connection pooler** Supabase (Project Settings > Database
-> > Connection pooling), pas la connexion directe `db.xxxx.supabase.co` : cette
+> Utilise l'URL du **connection pooler** Supabase (Project Settings → Database
+> → Connection pooling), pas la connexion directe `db.xxxx.supabase.co` : cette
 > dernière n'a souvent qu'une adresse IPv6, injoignable depuis le réseau Docker
 > par défaut (Docker Desktop). Le pooler résout en IPv4.
 
@@ -290,11 +291,12 @@ uv run pytest
 Lance toute la suite (API, graphe multi-agent, outils, UI Streamlit) avec un
 rapport de couverture. Le seuil `--cov-fail-under=80` (configuré dans
 `pyproject.toml`) fait échouer la commande si la couverture de `src/` et
-`app_frontend.py` repasse sous 80 % — actuellement **~91 %**.
+`app_frontend.py` repasse sous 80 % — actuellement **~92 %**.
 
 - `tests/` : tests unitaires (mocks LangChain/Groq/psycopg2/FAISS — aucun
-  appel réseau réel), plus `tests/test_app_frontend.py` qui utilise le
-  framework officiel `streamlit.testing.v1.AppTest`.
+  appel réseau réel), dont `tests/test_auth.py` (hash, JWT, rotation des
+  refresh tokens) et `tests/test_app_frontend.py` qui utilise le framework
+  officiel `streamlit.testing.v1.AppTest`.
 - `test_api.py` : tests de contrat de l'API FastAPI, graphe mocké pour rester
   rapide et déterministe.
 - `check_data_pipeline.py` / `check_groq_config.py` : diagnostics manuels
@@ -328,13 +330,25 @@ réelle du `StateGraph` compilé — jamais obsolète).
 ### Endpoints API
 
 ```bash
-# Santé
+# Santé (public, pas d'authentification)
 curl http://localhost:8000/health
 
-# Question à l'agent
+# Authentification — récupère un couple de tokens
+curl -X POST "http://localhost:8000/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{"username": "streamlit-ui", "password": "TON_MOT_DE_PASSE_DE_SERVICE"}'
+# → {"access_token": "...", "refresh_token": "...", "token_type": "bearer"}
+
+# Question à l'agent (authentification requise)
 curl -X POST "http://localhost:8000/chat" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <access_token>" \
   -d '{"question": "Parle-moi de The Shining"}'
+
+# Rafraîchir un access token expiré (rotation : l'ancien refresh_token est révoqué)
+curl -X POST "http://localhost:8000/auth/refresh" \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token": "<refresh_token>"}'
 
 # Infos système
 curl http://localhost:8000/info
@@ -364,6 +378,7 @@ HorRAGor_Bot_Pt_3/
 ├── src/
 │   ├── main.py                        # API FastAPI — endpoint /chat, branche le graphe
 │   ├── config.py                      # Configuration LLM (Groq) et chemins
+│   ├── auth.py                        # Authentification par Refresh Tokens
 │   ├── metrics.py                     # Instrumentation Prometheus par agent
 │   ├── logging_config.py              # Journalisation Loguru unifiée
 │   ├── models/state.py                # AgentState — State partagé multi-agent
@@ -375,6 +390,7 @@ HorRAGor_Bot_Pt_3/
 │       ├── router.py                  # Aiguillage conditionnel
 │       └── pipeline.py                # Assemblage et compilation du StateGraph
 ├── docs/                              # Documentation Sphinx (source + scripts de génération)
+├── migrations/                        # Tables auth (users, refresh_tokens) + seed du compte de service
 ├── monitoring/                        # Config Prometheus + provisioning Grafana
 ├── tests/                             # Tests unitaires Partie 3
 ├── .github/workflows/ci.yml           # Pipeline CI/CD
