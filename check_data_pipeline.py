@@ -1,6 +1,8 @@
 """
-Test progressif du pipeline HorRAGor.
-Lance depuis la racine du projet : python test_pipeline.py
+Script de diagnostic manuel du pipeline d'ingestion HorRAGor (Partie 1).
+Ce n'est pas une suite pytest : chaque fonction affiche un rapport lisible et
+enchaîne ses résultats à la suivante (voir le bloc __main__).
+Lance depuis la racine du projet : python check_data_pipeline.py
 """
 import json
 from pathlib import Path

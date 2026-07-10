@@ -1,5 +1,7 @@
 """
-Script unique de test pour vérifier la configuration HorRAGor BOT avec Groq
+Script de diagnostic manuel de la configuration Groq (Partie 2, legacy).
+Ce n'est pas une suite pytest : lance-le directement avec
+`python check_groq_config.py` pour un rapport lisible en console.
 """
 
 import asyncio

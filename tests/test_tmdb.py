@@ -1,10 +1,11 @@
-import sys
 import os
+import sys
+
 # Ajouter le chemin racine au PYTHONPATH
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from app.services.tmdb_api import TMDBService
-from app.utils.logger import logger
+
 
 def test_tmdb():
     tmdb = TMDBService()

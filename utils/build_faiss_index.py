@@ -35,9 +35,9 @@ def build_index(films: list[dict]):
     return index, id_map
 
 # 3. Sauvegarde sur disque (pour le réutiliser sans reconstruire)
-os.makedirs("data", exist_ok=True)
+os.makedirs("data/faiss_index", exist_ok=True)
 
-def save(index, id_map, index_path="data/faiss.index", map_path="data/id_map.npy"):
+def save(index, id_map, index_path="data/faiss_index/faiss.index", map_path="data/faiss_index/id_map.npy"):
     faiss.write_index(index, index_path)
     np.save(map_path, np.array(id_map))
     print(f"Index sauvegardé : {index.ntotal} vecteurs")

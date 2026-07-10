@@ -1,14 +1,14 @@
-import sys
-import os
 import json
-from datetime import datetime
+import os
+import sys
 
 # Ajouter le chemin racine au PYTHONPATH
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from app.config.config import settings
 from app.services.tmdb_api import TMDBService
 from app.utils.logger import logger
-from app.config.config import settings
+
 
 def export_horror_movies(max_pages: int = 5):
     tmdb = TMDBService()

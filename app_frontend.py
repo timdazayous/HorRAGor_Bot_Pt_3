@@ -1,10 +1,62 @@
+import os
 import re
 
+import httpx
 import streamlit as st
 import streamlit.components.v1 as components
-import httpx
+from dotenv import load_dotenv
 
-API_URL = "http://localhost:8000/chat"
+load_dotenv()
+
+API_BASE_URL   = os.environ.get("API_BASE_URL", "http://localhost:8000")
+API_URL        = f"{API_BASE_URL}/chat"
+AUTH_LOGIN_URL = f"{API_BASE_URL}/auth/login"
+AUTH_REFRESH_URL = f"{API_BASE_URL}/auth/refresh"
+
+SERVICE_ACCOUNT_USERNAME = os.environ.get("SERVICE_ACCOUNT_USERNAME")
+SERVICE_ACCOUNT_PASSWORD = os.environ.get("SERVICE_ACCOUNT_PASSWORD")
+
+
+def _login() -> dict:
+    """Authentifie le service Streamlit auprès de l'API (compte de service, pas d'utilisateur final)."""
+    response = httpx.post(
+        AUTH_LOGIN_URL,
+        json={"username": SERVICE_ACCOUNT_USERNAME, "password": SERVICE_ACCOUNT_PASSWORD},
+        timeout=10.0,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def _refresh_tokens(refresh_token: str) -> dict:
+    response = httpx.post(AUTH_REFRESH_URL, json={"refresh_token": refresh_token}, timeout=10.0)
+    response.raise_for_status()
+    return response.json()
+
+
+def _authenticated_post(url: str, json: dict, timeout: float) -> httpx.Response:
+    """
+    POST authentifié : joint l'access token courant, se ré-authentifie
+    automatiquement (refresh, puis login si besoin) sur un 401 — invisible
+    pour l'utilisateur du chatbot.
+    """
+    if "tokens" not in st.session_state:
+        st.session_state.tokens = _login()
+
+    def _post_with_current_token() -> httpx.Response:
+        headers = {"Authorization": f"Bearer {st.session_state.tokens['access_token']}"}
+        return httpx.post(url, json=json, headers=headers, timeout=timeout)
+
+    response = _post_with_current_token()
+
+    if response.status_code == 401:
+        try:
+            st.session_state.tokens = _refresh_tokens(st.session_state.tokens["refresh_token"])
+        except httpx.HTTPStatusError:
+            st.session_state.tokens = _login()
+        response = _post_with_current_token()
+
+    return response
 
 
 def _sanitize_markdown(text: str) -> str:
@@ -817,7 +869,7 @@ if prompt := st.chat_input("Murmure ton sort dans l'obscurité..."):
                     {"role": m["role"], "content": m["content"]}
                     for m in st.session_state.messages[:-1]
                 ][-8:]
-                response = httpx.post(
+                response = _authenticated_post(
                     API_URL,
                     json={"question": prompt, "history": history},
                     timeout=60.0,

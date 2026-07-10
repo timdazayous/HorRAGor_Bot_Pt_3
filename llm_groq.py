@@ -37,8 +37,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _BASE_DIR         = Path(__file__).parent
-_FAISS_INDEX_PATH = _BASE_DIR / "data" / "faiss.index"
-_ID_MAP_PATH      = _BASE_DIR / "data" / "id_map.npy"
+_FAISS_INDEX_PATH = _BASE_DIR / "data" / "faiss_index" / "faiss.index"
+_ID_MAP_PATH      = _BASE_DIR / "data" / "faiss_index" / "id_map.npy"
 
 _model:  Optional[SentenceTransformer] = None
 _index:  Optional[faiss.Index]         = None

@@ -1,85 +1,106 @@
-🚀 HorRAGor BOT - Quick Start avec Groq
-⚡ Démarrage rapide en 5 minutes
+🚀 HorRAGor BOT — Quick Start (Partie 3 — Multi-Agent LangGraph)
+⚡ Démarrage rapide
+
 Step 1: Obtenir une clé API Groq
 Allez sur : https://console.groq.com/
 Connectez-vous / créez un compte
 Accédez à API Keys
 Cliquez sur Create New API Key
 Copiez la clé (commence généralement par gsk_...)
+
 Step 2: Configurer .env
 
-Ouvrez le fichier .env et remplacez :
-
-GROQ_API_KEY=your_groq_api_key_here
-
-Par votre vraie clé :
+Copiez .env.example vers .env et renseignez au minimum :
 
 GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-Step 3: Installer les dépendances
-pip install -r requirements.txt
-Step 4: Tester la configuration Groq
-python test_groq_config.py
-Vous devriez voir :
-✅ Configuration Groq
-✅ Import du module
-✅ Client Groq
-✅ Génération de réponse
-Step 5: Lancer l’API
-🖥️ Terminal 1 - FastAPI
-python main.py
+SUPABASE_DB_URL=postgresql://postgres:MOT_DE_PASSE@db.XXXX.supabase.co:5432/postgres
+
+LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_HOST sont optionnelles
+(monitoring désactivé si absentes — voir README, section Langfuse).
+
+Step 3: Installer les dépendances (uv)
+uv sync
+
+Step 4: Vérifier que l'index FAISS existe
+data/faiss_index/faiss.index et data/faiss_index/id_map.npy doivent être présents.
+S'ils manquent :
+uv run python utils/build_faiss_index.py
+
+Step 5: Lancer l'API
+
+🖥️ Terminal 1 — FastAPI
+uvicorn src.main:app --reload
 
 👉 Documentation Swagger :
 http://localhost:8000/docs
 
-🎨 Terminal 2 - Streamlit
-streamlit run streamlit_app.py
+🎨 Terminal 2 — Streamlit
+streamlit run app_frontend.py
 
 👉 Interface :
 http://localhost:8501
 
-🧪 Tester l’API avec curl
+🧪 Tester l'API avec curl
 curl -X POST "http://localhost:8000/chat" \
   -H "Content-Type: application/json" \
   -d '{
     "question": "Recommande-moi un film d'\''horreur comme The Shining"
   }'
+
 Réponse attendue :
 {
-  "answer": "[Réponse générée par Groq...]",
-  "tools_used": ["groq-llm"],
+  "answer": "[Réponse romancée générée par l'Agent de Narration, validée par Le Juge...]",
+  "tools_used": ["rag_agent", "narration_agent", "judge_agent"],
   "judge_verdict": {
     "is_valid": true,
     "confidence": 0.95,
-    "reasoning": "Réponse générée par Groq et validée..."
+    "reasoning": "Réponse fidèle au dossier factuel, sans hallucination."
   },
   "conversation_id": "conv_default"
 }
+
+(tools_used contiendra aussi "scraper_agent" si le RAG local était incomplet,
+et plusieurs "narration_agent"/"judge_agent" en cas de retry.)
+
 📝 Architecture
+
 ┌─────────────────┐
 │   Streamlit     │
-│  (Front-End)    │
+│  app_frontend.py│
 └────────┬────────┘
-         │ HTTP POST
-         │ /chat
+         │ HTTP POST /chat
          ↓
 ┌─────────────────┐
 │   FastAPI       │
-│  (Back-End)     │
+│   src/main.py   │
 └────────┬────────┘
-         │ async call
-         │ generate_response()
+         │ agent_graph.invoke()
          ↓
-┌─────────────────┐
-│   Groq LLM      │
-│ (Llama / Mixtral│
-└─────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│  Graphe multi-agent LangGraph (src/graph/)                     │
+│                                                                  │
+│  rag_node ──(complet)────────→ narration_node ⇄ judge_node ──→ END
+│     │                               ↑              │(rejeté,   │
+│     └─(incomplet)→ scraper_node ────┘              │ retries   │
+│                                                     │ restants) │
+│                                     └───────────────┘           │
+└──────────────────────────────────────────────────────────────┘
+         │                    │
+         ↓                    ↓
+   FAISS + Supabase      Wikipedia (live)
+
 🔑 Fichiers clés
-Fichier	Rôle
-main.py	API FastAPI avec endpoint /chat
-llm_groq.py	Client Groq asynchrone
-streamlit_app.py	Interface utilisateur
-.env	Configuration (GROQ_API_KEY)
-requirements.txt	Dépendances
+Fichier                        Rôle
+src/main.py                    API FastAPI, endpoint /chat, branche le graphe
+src/graph/pipeline.py          Assemble et compile le StateGraph
+src/graph/nodes.py             rag_node / scraper_node / narration_node / judge_node
+src/graph/router.py            Routage conditionnel (RAG suffisant ?)
+src/models/state.py            AgentState partagé entre les 3 agents
+src/tools/rag_tool.py          Recherche FAISS + Supabase
+src/tools/scraper_tool.py      Recherche Wikipedia en direct
+app_frontend.py                Interface Streamlit
+.env                           Configuration (GROQ_API_KEY, Supabase, Langfuse)
+
 📚 Endpoints disponibles
 1. /health (GET)
 curl http://localhost:8000/health
@@ -97,49 +118,49 @@ curl http://localhost:8000/info
 
 Éditer .env :
 
-# Modèle Groq
+# Modèle Groq (partagé par les 3 agents)
 LLM_MODEL=llama-3.3-70b-versatile
 
-# Température (0 = précis, 1 = créatif)
-LLM_TEMPERATURE=0.7
+# Températures par agent (factuel → créatif)
+RAG_TEMPERATURE=0.2
+SCRAPER_TEMPERATURE=0.3
+NARRATION_TEMPERATURE=0.9
 
-# Max tokens
 LLM_MAX_TOKENS=2048
 
-# API server
-API_HOST=0.0.0.0
-API_PORT=8000
 🐛 Dépannage
-❌ "GROQ_API_KEY not configured"
-
+❌ "GROQ_API_KEY non configurée"
 → Vérifie ton fichier .env
 
-❌ "Connection refused"
+❌ "Connection refused" sur /chat
+→ Lance l'API :
+uvicorn src.main:app --reload
 
-→ Lance l’API :
+❌ "ModuleNotFoundError"
+uv sync
 
-python main.py
-❌ "Module not found"
-pip install -r requirements.txt
-❌ Streamlit ne répond pas
+❌ Index FAISS manquant
+uv run python utils/build_faiss_index.py
 
-Vérifie dans streamlit_app.py :
+❌ Streamlit n'arrive pas à joindre l'API
+Vérifie dans app_frontend.py :
+API_URL = "http://localhost:8000/chat"
 
-API_URL = "http://localhost:8000"
 📖 Documentation
 https://console.groq.com/
 https://docs.groq.com/
+https://langchain-ai.github.io/langgraph/
+https://langfuse.com/docs
 https://fastapi.tiangolo.com/
 https://docs.streamlit.io/
-💡 Prochaines étapes
-Ajouter RAG (FAISS / embeddings)
-Ajouter mémoire conversationnelle
-Intégrer LangGraph
-Connecter Supabase
-Ajouter cache des réponses Groq
+
+💡 Pistes suivantes
+Ajouter un checkpointer LangGraph pour la mémoire conversationnelle persistante
+Ajouter un cache des réponses par agent
+
 👻 HorRAGor BOT est prêt
 
-✔ Backend FastAPI
-✔ LLM Groq connecté
+✔ Backend FastAPI branché sur le graphe multi-agent
+✔ 3 agents spécialisés (RAG, Scraper, Narration) via LangGraph
 ✔ Frontend Streamlit
-✔ Architecture scalable
+✔ Monitoring Langfuse optionnel

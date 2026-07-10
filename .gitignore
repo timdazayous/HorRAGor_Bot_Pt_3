@@ -29,3 +29,11 @@ data/output/rt_debug.html
 
 # Paramètres locaux Claude Code (personnels, non partageables)
 .claude/
+
+# Tests
+.coverage
+.pytest_cache/
+htmlcov/
+
+# Logs runtime (montés depuis Docker)
+logs/

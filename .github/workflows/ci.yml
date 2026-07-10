@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Couche Intelligence — lint (src/ + tests/ + UI)
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv sync
+      - run: uv run ruff check src/ tests/ test_api.py app_frontend.py
+
+  # ---------------------------------------------------------------------------
+  # Couche Intelligence (API) + Couche Présentation (UI Streamlit) — tests
+  # ---------------------------------------------------------------------------
+  test:
+    name: Tests & couverture (≥80%)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv sync
+      - name: Lancer la suite de tests avec couverture
+        run: uv run pytest
+        env:
+          GROQ_API_KEY: dummy-not-used-tests-are-mocked
+
+  # ---------------------------------------------------------------------------
+  # Documentation Sphinx — doit rester générable sans avertissement
+  # ---------------------------------------------------------------------------
+  docs:
+    name: Documentation (Sphinx)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv sync
+      - name: Générer la spec OpenAPI et le diagramme du graphe
+        run: |
+          uv run python docs/generate_openapi.py
+          uv run python docs/generate_graph_diagram.py
+      - name: Build Sphinx (warnings = erreurs)
+        run: uv run sphinx-build -b html docs/source docs/build -W
+
+  # ---------------------------------------------------------------------------
+  # Couche Intelligence — l'image Docker doit se construire sans erreur
+  # ---------------------------------------------------------------------------
+  docker-build:
+    name: Build image Docker (API)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build Dockerfile.api
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.api
+          push: false
+          tags: horragor-api:ci
+
+  # ---------------------------------------------------------------------------
+  # CD — publie l'image sur GHCR uniquement sur push vers main, une fois tout vert
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publier l'image (GHCR)
+    needs: [lint, test, docs, docker-build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Connexion à GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build & push horragor-api
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.api
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}-api:latest
+            ghcr.io/${{ github.repository }}-api:${{ github.sha }}

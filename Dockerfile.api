@@ -1,0 +1,22 @@
+# HorRAGor BOT — API FastAPI (graphe multi-agent LangGraph)
+FROM python:3.10-slim
+
+# libpq-dev + gcc + libc6-dev : requis pour compiler psycopg2 depuis les sources
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq-dev gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir uv
+
+WORKDIR /app
+
+# Dépendances d'abord (cache Docker : ne se réinstalle que si pyproject/uv.lock changent)
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project --no-dev
+
+# Code de l'API multi-agent (self-contained, ne dépend d'aucun module racine)
+COPY src/ ./src/
+
+EXPOSE 8000
+
+CMD ["uv", "run", "--no-dev", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
