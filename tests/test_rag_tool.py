@@ -93,6 +93,139 @@ class TestFormatMovie:
         assert "Aucun synopsis disponible." in text
 
 
+class TestGetSurvivalContext:
+    def test_found_film_with_keywords(self, monkeypatch):
+        row = {
+            "title": "The Shining", "original_title": "The Shining", "year": 1980,
+            "overview": "Jack Torrance devient gardien d'un hôtel isolé.",
+            "genres": ["Horror", "Thriller"],
+            "horror_keywords": ["blood", "ghost", "axe"], "richness_score": 80,
+        }
+        fake_conn = FakeConnection(FakeCursor(fetchone_result=row))
+        monkeypatch.setattr(rag_tool, "_get_conn", lambda: fake_conn)
+
+        result = rag_tool.get_survival_context("The Shining")
+
+        assert result["is_complete"] is True
+        assert result["matched_title"] == "The Shining"
+        assert "blood, ghost, axe" in result["context"]
+
+    def test_found_film_without_keywords_omits_the_line(self, monkeypatch):
+        row = {
+            "title": "Obscure Movie", "original_title": None, "year": 2020,
+            "overview": "Synopsis.", "genres": [], "horror_keywords": None, "richness_score": None,
+        }
+        fake_conn = FakeConnection(FakeCursor(fetchone_result=row))
+        monkeypatch.setattr(rag_tool, "_get_conn", lambda: fake_conn)
+
+        result = rag_tool.get_survival_context("Obscure Movie")
+
+        assert "Éléments d'horreur clés" not in result["context"]
+
+    def test_not_found_is_incomplete(self, monkeypatch):
+        fake_conn = FakeConnection(FakeCursor(fetchone_result=None))
+        monkeypatch.setattr(rag_tool, "_get_conn", lambda: fake_conn)
+
+        result = rag_tool.get_survival_context("Film inexistant")
+
+        assert result["is_complete"] is False
+        assert result["matched_title"] is None
+
+    def test_db_error_is_incomplete(self, monkeypatch):
+        def _raise():
+            raise ConnectionError("DB down")
+        monkeypatch.setattr(rag_tool, "_get_conn", _raise)
+
+        result = rag_tool.get_survival_context("The Shining")
+
+        assert result["is_complete"] is False
+
+
+class TestCalculateMovieAge:
+    def test_computes_age_from_release_date(self, monkeypatch):
+        from datetime import date
+        row = {"title": "The Shining", "original_title": "The Shining", "release_date": date(1980, 5, 23)}
+        fake_conn = FakeConnection(FakeCursor(fetchone_result=row))
+        monkeypatch.setattr(rag_tool, "_get_conn", lambda: fake_conn)
+
+        result = rag_tool.calculate_movie_age("The Shining")
+
+        assert result["is_complete"] is True
+        assert result["matched_title"] == "The Shining"
+        assert "1980" in result["context"]
+
+    def test_not_found_is_incomplete(self, monkeypatch):
+        fake_conn = FakeConnection(FakeCursor(fetchone_result=None))
+        monkeypatch.setattr(rag_tool, "_get_conn", lambda: fake_conn)
+
+        result = rag_tool.calculate_movie_age("Film inexistant")
+
+        assert result["is_complete"] is False
+        assert result["matched_title"] is None
+
+    def test_missing_release_date_is_incomplete(self, monkeypatch):
+        row = {"title": "X", "original_title": None, "release_date": None}
+        fake_conn = FakeConnection(FakeCursor(fetchone_result=row))
+        monkeypatch.setattr(rag_tool, "_get_conn", lambda: fake_conn)
+
+        result = rag_tool.calculate_movie_age("X")
+
+        assert result["is_complete"] is False
+        assert result["matched_title"] == "X"
+
+    def test_db_error_is_incomplete(self, monkeypatch):
+        def _raise():
+            raise ConnectionError("DB down")
+        monkeypatch.setattr(rag_tool, "_get_conn", _raise)
+
+        result = rag_tool.calculate_movie_age("The Shining")
+
+        assert result["is_complete"] is False
+
+
+class TestFindSimilarMovies:
+    def test_excludes_source_film_and_formats_results(self, monkeypatch):
+        source_row = {"id": 1, "title": "The Shining", "overview": "Un hôtel isolé..."}
+        similar_rows = [
+            {"id": 2, "title": "Sleepy Hollow", "overview": "...", "year": 1999, "genres": ["Horror"], "tmdb_score": 7.2},
+        ]
+        fake_cursor = FakeCursor(fetchone_result=source_row, fetchall_result=similar_rows)
+        fake_conn = FakeConnection(fake_cursor)
+        monkeypatch.setattr(rag_tool, "_get_conn", lambda: fake_conn)
+
+        fake_model = type("M", (), {"encode": lambda self, texts, normalize_embeddings: np.array([[0.1, 0.2]])})()
+        fake_index = type("I", (), {"search": lambda self, vec, k: (np.array([[0.9, 0.8]]), np.array([[0, 1]]))})()
+        fake_id_map = np.array([1, 2])  # index 0 = film source (id=1), exclu du résultat
+        monkeypatch.setattr(rag_tool, "_get_retriever", lambda: (fake_model, fake_index, fake_id_map))
+
+        result = rag_tool.find_similar_movies("The Shining", k=5)
+
+        assert result["is_complete"] is True
+        assert result["matched_title"] == "The Shining"
+        assert "1. Sleepy Hollow" in result["context"]
+        # "The Shining" n'apparaît que dans l'en-tête ("Films similaires à « The
+        # Shining »"), jamais comme entrée de la liste numérotée (film source exclu).
+        assert result["context"].count("The Shining") == 1
+
+    def test_source_not_found_is_incomplete(self, monkeypatch):
+        fake_conn = FakeConnection(FakeCursor(fetchone_result=None))
+        monkeypatch.setattr(rag_tool, "_get_conn", lambda: fake_conn)
+
+        result = rag_tool.find_similar_movies("Film inexistant")
+
+        assert result["is_complete"] is False
+        assert result["matched_title"] is None
+
+    def test_db_error_is_incomplete(self, monkeypatch):
+        def _raise():
+            raise ConnectionError("DB down")
+        monkeypatch.setattr(rag_tool, "_get_conn", _raise)
+
+        result = rag_tool.find_similar_movies("The Shining")
+
+        assert result["is_complete"] is False
+
+
 class TestRagSearchTitle:
     def test_exact_match_with_overview_is_complete(self, monkeypatch):
         row = {

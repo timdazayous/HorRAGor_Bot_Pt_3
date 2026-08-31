@@ -11,10 +11,13 @@ from src.models.state import AgentState
 def should_scrape_or_narrate(state: AgentState) -> str:
     """
     Aiguille le flux après l'Agent RAG :
-      - "narration" si le lore local est suffisant (rag_complete=True)
-      - "scraper"   si le dossier local est incomplet et doit être enrichi
+      - "narration" si le lore local est suffisant (rag_complete=True) et
+        qu'aucun enrichissement n'a été explicitement demandé
+      - "scraper"   si le dossier local est incomplet (rag_complete=False),
+        ou si l'utilisateur a explicitement demandé des anecdotes
+        (force_scrape=True)
     """
-    if state.get("rag_complete"):
+    if state.get("rag_complete") and not state.get("force_scrape"):
         return "narration"
     return "scraper"
 

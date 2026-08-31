@@ -8,7 +8,7 @@ construction du State retourné).
 from types import SimpleNamespace
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from src.graph import nodes
 
@@ -33,25 +33,21 @@ def fake_llm(monkeypatch):
 
 
 class TestParseExtraction:
-    def test_well_formed_title(self):
-        subject, is_title = nodes._parse_extraction("TITRE\nThe Shining")
+    @pytest.mark.parametrize("intent", ["TITRE", "THEME", "SURVIE", "AGE", "SIMILAIRE", "ANECDOTES"])
+    def test_well_formed_each_intent(self, intent):
+        parsed_intent, subject = nodes._parse_extraction(f"{intent}\nThe Shining")
         assert subject == "The Shining"
-        assert is_title is True
-
-    def test_well_formed_theme(self):
-        subject, is_title = nodes._parse_extraction("THEME\nfantômes maison hantée")
-        assert subject == "fantômes maison hantée"
-        assert is_title is False
+        assert parsed_intent == intent
 
     def test_malformed_output_falls_back_to_title(self):
-        subject, is_title = nodes._parse_extraction("juste une phrase sans le bon format")
-        assert is_title is True
+        intent, subject = nodes._parse_extraction("juste une phrase sans le bon format")
+        assert intent == "TITRE"
         assert subject  # non vide
 
     def test_empty_output(self):
-        subject, is_title = nodes._parse_extraction("")
+        intent, subject = nodes._parse_extraction("")
+        assert intent == "TITRE"
         assert subject == ""
-        assert is_title is True
 
 
 class TestParseJudgeVerdict:
@@ -79,6 +75,7 @@ class TestRagNode:
 
         assert result["rag_complete"] is True
         assert result["matched_title"] == "The Shining"
+        assert result["is_survival_mode"] is False
         assert result["tools_used"] == ["rag_agent"]
         assert isinstance(result["messages"][0], AIMessage)
 
@@ -94,6 +91,87 @@ class TestRagNode:
 
         assert result["rag_complete"] is False
         assert result["matched_title"] is None
+        assert result["is_survival_mode"] is False
+
+    def test_survival_query_calls_get_survival_context_not_rag_search(self, fake_llm, monkeypatch):
+        """Régression : une question de suivi comme 'mon taux de survie dans ce dernier ?'
+        doit résoudre le film déjà discuté et utiliser le Simulateur de Survie,
+        pas repartir sur une recherche thématique générique."""
+        fake_llm(["SURVIE\nThe Shining", "Dossier de survie sur The Shining."])
+
+        called = {"rag_search": False, "get_survival_context": None}
+        monkeypatch.setattr(nodes, "rag_search", lambda *a, **k: called.update(rag_search=True) or {})
+
+        def fake_get_survival_context(subject):
+            called["get_survival_context"] = subject
+            return {"context": "...", "is_complete": True, "matched_title": "The Shining"}
+        monkeypatch.setattr(nodes, "get_survival_context", fake_get_survival_context)
+
+        state = {
+            "messages": [
+                HumanMessage(content="parle de the shining"),
+                AIMessage(content="..."),
+                HumanMessage(content="quel est mon taux de survie dans ce dernier ?"),
+            ],
+            "user_query": "quel est mon taux de survie dans ce dernier ?",
+        }
+        result = nodes.rag_node(state)
+
+        assert called["get_survival_context"] == "The Shining"
+        assert called["rag_search"] is False
+        assert result["is_survival_mode"] is True
+        assert result["matched_title"] == "The Shining"
+
+    def test_age_query_calls_calculate_movie_age(self, fake_llm, monkeypatch):
+        fake_llm(["AGE\nHalloween", "Halloween est sorti il y a 47 ans."])
+        called = {}
+
+        def fake_calculate_movie_age(subject):
+            called["subject"] = subject
+            return {"context": "...", "is_complete": True, "matched_title": "Halloween"}
+        monkeypatch.setattr(nodes, "calculate_movie_age", fake_calculate_movie_age)
+
+        def _fail_if_called(*a, **k):
+            raise AssertionError("rag_search ne devrait pas être appelé")
+        monkeypatch.setattr(nodes, "rag_search", _fail_if_called)
+
+        state = {"messages": [HumanMessage(content="quel age a Halloween ?")], "user_query": "quel age a Halloween ?"}
+        result = nodes.rag_node(state)
+
+        assert called["subject"] == "Halloween"
+        assert result["is_survival_mode"] is False
+        assert result["matched_title"] == "Halloween"
+
+    def test_similar_query_calls_find_similar_movies(self, fake_llm, monkeypatch):
+        fake_llm(["SIMILAIRE\nScream", "Films similaires à Scream."])
+        called = {}
+
+        def fake_find_similar_movies(subject):
+            called["subject"] = subject
+            return {"context": "...", "is_complete": True, "matched_title": "Scream"}
+        monkeypatch.setattr(nodes, "find_similar_movies", fake_find_similar_movies)
+
+        state = {"messages": [HumanMessage(content="films similaires a Scream ?")], "user_query": "films similaires a Scream ?"}
+        result = nodes.rag_node(state)
+
+        assert called["subject"] == "Scream"
+        assert result["matched_title"] == "Scream"
+
+    def test_anecdotes_query_forces_incomplete_even_if_db_has_data(self, fake_llm, monkeypatch):
+        """Régression : une demande explicite d'anecdotes doit toujours passer par le
+        Scraper, même si la base locale a déjà toutes les infos de base sur le film."""
+        fake_llm(["ANECDOTES\nGet Out", "Dossier de base sur Get Out."])
+        monkeypatch.setattr(
+            nodes, "rag_search",
+            lambda subject, is_title: {"context": "déjà complet", "is_complete": True, "matched_title": "Get Out"},
+        )
+
+        state = {"messages": [HumanMessage(content="donne-moi des anecdotes sur Get Out")], "user_query": "donne-moi des anecdotes sur Get Out"}
+        result = nodes.rag_node(state)
+
+        assert result["rag_complete"] is True  # reflet fidèle : la base est bien complète
+        assert result["force_scrape"] is True  # mais l'enrichissement est explicitement demandé
+        assert result["matched_title"] == "Get Out"
 
 
 class TestScraperNode:
@@ -172,6 +250,44 @@ class TestNarrationNode:
         human_msg = [m for m in captured_messages if isinstance(m, HumanMessage)][0]
         assert "Critique du Juge" in human_msg.content
         assert "Hors sujet." in human_msg.content
+
+    def test_survival_mode_uses_survival_prompt(self, fake_llm, monkeypatch):
+        captured_messages = []
+        llm = fake_llm(["🩸 SIMULATEUR DE SURVIE — THE SHINING (1980)..."])
+        original_invoke = llm.invoke
+
+        def spy_invoke(messages):
+            captured_messages.extend(messages)
+            return original_invoke(messages)
+        llm.invoke = spy_invoke
+
+        state = {
+            "user_query": "quel est mon taux de survie dans ce dernier ?",
+            "rag_context": "Film : The Shining (1980)...",
+            "is_survival_mode": True,
+            "retry_count": 0,
+        }
+        result = nodes.narration_node(state)
+
+        system_msg = [m for m in captured_messages if isinstance(m, SystemMessage)][0]
+        assert system_msg is nodes._SURVIVAL_NARRATION_PROMPT
+        assert "SIMULATEUR DE SURVIE" in result["final_answer"]
+
+    def test_non_survival_mode_uses_gothic_prompt(self, fake_llm, monkeypatch):
+        captured_messages = []
+        llm = fake_llm(["Il était une fois..."])
+        original_invoke = llm.invoke
+
+        def spy_invoke(messages):
+            captured_messages.extend(messages)
+            return original_invoke(messages)
+        llm.invoke = spy_invoke
+
+        state = {"user_query": "Parle-moi de The Shining", "rag_context": "Dossier.", "retry_count": 0}
+        nodes.narration_node(state)
+
+        system_msg = [m for m in captured_messages if isinstance(m, SystemMessage)][0]
+        assert system_msg is nodes._NARRATION_SYSTEM_PROMPT
 
 
 class TestJudgeNode:

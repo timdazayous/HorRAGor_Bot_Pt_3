@@ -7,7 +7,7 @@ from src.models.state import AgentState
 def test_agent_state_has_expected_fields():
     expected = {
         "messages", "user_query", "rag_context", "matched_title",
-        "rag_complete", "scraper_context", "final_answer",
+        "rag_complete", "force_scrape", "is_survival_mode", "scraper_context", "final_answer",
         "judge_verdict", "retry_count", "tools_used",
     }
     assert expected == set(AgentState.__annotations__.keys())
@@ -20,6 +20,8 @@ def test_agent_state_accepts_a_valid_instance():
         "rag_context": None,
         "matched_title": None,
         "rag_complete": False,
+        "force_scrape": False,
+        "is_survival_mode": False,
         "scraper_context": None,
         "final_answer": None,
         "judge_verdict": None,

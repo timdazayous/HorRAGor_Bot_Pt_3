@@ -117,9 +117,45 @@ START → rag ──(complet)────────────→ narration �
 | Agent | Rôle | Fichier |
 |---|---|---|
 | 🔎 **RAG** (Le Chercheur Local) | Premier point de contact — interroge FAISS + Supabase, extrait le lore brut, corrige les approximations de titre de l'utilisateur | `src/graph/nodes.py::rag_node` |
-| 🕸️ **Scraper** (L'Enquêteur du Web) | Déclenché **seulement si le RAG est incomplet** (routage conditionnel) — va chercher des anecdotes sur Wikipedia en direct | `src/graph/nodes.py::scraper_node` |
+| 🕸️ **Scraper** (L'Enquêteur du Web) | Déclenché si le RAG est incomplet (routage conditionnel), **ou systématiquement pour l'intention `ANECDOTES`** — va chercher des anecdotes sur Wikipedia en direct | `src/graph/nodes.py::scraper_node` |
 | ✍️ **Narration** (L'Écrivain Gothique) | Isolé de toute la plomberie technique (*context trimming*) — ne reçoit que la synthèse factuelle, jamais les logs bruts ni les noms d'outils | `src/graph/nodes.py::narration_node` |
 | ⚖️ **Juge** (Évaluateur qualité) | Évalue la réponse finale contre le dossier factuel ; déclenche une régénération de la Narration si la confiance est insuffisante (budget de retry borné, `JUDGE_MAX_RETRIES`) | `src/graph/nodes.py::judge_node` |
+
+### Les 6 intentions du RAG (parité avec les outils de la Partie 2)
+
+Le `rag_node` classifie chaque question via un appel LLM en une des 6
+intentions suivantes, en résolvant les follow-up conversationnels (« ce
+dernier », « et lui ? ») sur le film réellement discuté grâce à l'historique
+des messages :
+
+| Intention | Équivalent Partie 2 | Comportement |
+|---|---|---|
+| `TITRE` | `query_movie_metadata` | Fiche complète d'un film précis |
+| `THEME` | `search_horror_movies` (FAISS) | Recherche sémantique par thème/ambiance |
+| `SURVIE` | `horror_survival_simulator` | Simulateur de survie (narration au format dédié : % de survie, cause de mort, menaces, conseils) |
+| `AGE` | `movie_age` | Calcul de l'ancienneté du film |
+| `SIMILAIRE` | `find_similar_horror_movies` | k plus proches voisins FAISS (hors le film source) |
+| `ANECDOTES` | `scrape_detailed_synopsis` | Force le passage par le Scraper même si la fiche RAG est déjà complète en base |
+
+Toutes ces fonctions (`src/tools/rag_tool.py`) respectent le même contrat de
+retour que `rag_search` (`{context, is_complete, matched_title}`), donc la
+Narration et le Juge n'ont nécessité aucune modification pour les accueillir.
+Seul `router.py` a gagné une condition supplémentaire, pour le cas `ANECDOTES`
+(voir encart ci-dessous).
+
+> La classification (extraction du couple intent/sujet) tourne à
+> **`temperature=0`** avec un prompt qui interdit explicitement au LLM de
+> répondre à la question — sans ça, le modèle dévie parfois du format à deux
+> lignes attendu (il répond directement au lieu de classifier), ce qui fait
+> silencieusement retomber sur `TITRE` par défaut. Vérifié en conditions
+> réelles (Groq) sur les 6 intentions.
+
+> Le forçage du Scraper pour `ANECDOTES` passe par un champ dédié du State,
+> **`force_scrape`**, distinct de `rag_complete`. Ce dernier garde ainsi son
+> sens littéral (la donnée locale est-elle réellement incomplète ?), et
+> `router.py` reste fidèle au principe du brief : un routage qui reflète
+> honnêtement la présence ou l'absence d'informations dans le State, jamais
+> une valeur détournée pour produire un effet de bord.
 
 Le **routage conditionnel** (`src/graph/router.py`) matérialise l'intelligence
 dynamique du réseau :
@@ -329,6 +365,10 @@ réelle du `StateGraph` compilé — jamais obsolète).
 
 ### Endpoints API
 
+> Les exemples ci-dessous utilisent `:8000` (lancement `uvicorn` direct, sans
+> Docker). En passant par `docker compose up -d`, remplace par `:8020` (voir
+> section Monitoring).
+
 ```bash
 # Santé (public, pas d'authentification)
 curl http://localhost:8000/health
@@ -383,7 +423,7 @@ HorRAGor_Bot_Pt_3/
 │   ├── logging_config.py              # Journalisation Loguru unifiée
 │   ├── models/state.py                # AgentState — State partagé multi-agent
 │   ├── tools/
-│   │   ├── rag_tool.py                # Recherche FAISS + Supabase
+│   │   ├── rag_tool.py                # FAISS + Supabase (recherche, âge, films similaires, simulateur de survie)
 │   │   └── scraper_tool.py            # Recherche Wikipedia en direct
 │   └── graph/
 │       ├── nodes.py                   # rag_node / scraper_node / narration_node / judge_node

@@ -25,6 +25,18 @@ class AgentState(TypedDict):
     # Verdict du routeur : la récolte locale suffit-elle à nourrir la narration ?
     rag_complete: bool
 
+    # Demande explicite d'enrichissement (intention ANECDOTES) : force le
+    # passage par le Scraper même si rag_complete=True. Distinct de
+    # rag_complete pour que ce dernier garde son sens littéral (la donnée
+    # locale est-elle réellement incomplète ?), conformément au principe de
+    # routage du brief ("selon la présence ou l'absence d'informations").
+    force_scrape: bool
+
+    # L'utilisateur demande-t-il une simulation de survie ("mes chances de survie
+    # dans X ?") — bascule le prompt de l'Agent de Narration vers le format
+    # structuré du Simulateur de Survie plutôt que la narration gothique classique.
+    is_survival_mode: bool
+
     # Synthèse produite par l'Agent Scraper (anecdotes web), absente si non déclenché
     scraper_context: Optional[str]
 

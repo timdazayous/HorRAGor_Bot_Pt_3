@@ -12,6 +12,13 @@ class TestShouldScrapeOrNarrate:
     def test_missing_key_defaults_to_scraper(self):
         assert should_scrape_or_narrate({}) == "scraper"
 
+    def test_force_scrape_overrides_complete_rag(self):
+        """Intention ANECDOTES : la base est complète mais l'enrichissement est explicite."""
+        assert should_scrape_or_narrate({"rag_complete": True, "force_scrape": True}) == "scraper"
+
+    def test_no_force_scrape_with_complete_rag_goes_to_narration(self):
+        assert should_scrape_or_narrate({"rag_complete": True, "force_scrape": False}) == "narration"
+
 
 class TestShouldRetryOrEnd:
     def test_valid_verdict_ends(self):
