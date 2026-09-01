@@ -385,6 +385,13 @@ rapport de couverture. Le seuil `--cov-fail-under=80` (configuré dans
   officiel `streamlit.testing.v1.AppTest`.
 - `test_api.py` : tests de contrat de l'API FastAPI, graphe mocké pour rester
   rapide et déterministe.
+- `test_e2e.py` : scénario de bout en bout de la couche sécurité (login →
+  `/chat` protégé → refresh refusé sur route ressource → rôle admin →
+  rotation → logout → rate limiting), autonome (utilisateurs + refresh
+  tokens en mémoire, graphe bouchonné — aucune dépendance Supabase/Groq/FAISS).
+  Se lance seul (`uv run python test_e2e.py`) ou via `pytest` (aucune fonction
+  `test_*` n'y est définie, donc rien n'est collecté ni exécuté par erreur
+  pendant une suite `pytest` normale).
 - `check_data_pipeline.py` / `check_groq_config.py` : diagnostics manuels
   Partie 1/2 (`python check_*.py`), volontairement hors du nom `test_*.py`.
 
@@ -408,7 +415,7 @@ réelle du `StateGraph` compilé — jamais obsolète).
 | Job | Rôle |
 |---|---|
 | `lint` | `ruff check` |
-| `test` | Suite complète + seuil de couverture ≥ 80 % |
+| `test` | Suite complète + seuil de couverture ≥ 80 %, puis le scénario `test_e2e.py` |
 | `docs` | Régénère OpenAPI + diagramme, build Sphinx (`-W`, warnings = erreurs) |
 | `docker-build` | Build de `Dockerfile.api` |
 | `publish` | Sur push vers `main` uniquement, si tout est vert : build & push sur `ghcr.io/<repo>-api` (via `GITHUB_TOKEN`, aucun secret à configurer) |

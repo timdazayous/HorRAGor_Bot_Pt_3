@@ -32,9 +32,10 @@ uv run pytest                                    # full suite, coverage gate at 
 uv run pytest tests/test_auth.py                 # single file
 uv run pytest tests/test_auth.py::TestAccessToken::test_roundtrip -q   # single test
 uv run pytest -k "refresh"                       # by keyword
+uv run python test_e2e.py                        # standalone security scenario (login->chat->refresh->admin->logout->rate-limit), no real DB/LLM needed
 
 # Quality gates (all required by CI)
-uv run ruff check src/ tests/ test_api.py app_frontend.py
+uv run ruff check src/ tests/ test_api.py test_e2e.py app_frontend.py
 uv run sphinx-build -b html docs/source docs/build -W   # warnings fail the build
 
 # Docs regeneration (must run before a Sphinx build if the graph or API shape changed)
