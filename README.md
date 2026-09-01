@@ -261,22 +261,36 @@ exploitable qu'une seule fois.
 **Qui s'authentifie ?** Un unique compte de service (`streamlit-ui`), pas les
 visiteurs du chatbot — l'IHM s'authentifie silencieusement au démarrage et se
 ré-authentifie en arrière-plan sur un 401, sans écran de connexion visible.
+Chaque compte porte un **rôle** (`user` par défaut, `admin`) — colonne
+`users.role`, embarquée dans le claim `role` de l'access token — préparant
+l'autorisation par rôle sur les futures routes d'administration.
 
 **Mise en place (une fois)** :
 
 ```bash
-uv run python migrations/apply_migrations.py       # crée les tables users / refresh_tokens
-uv run python migrations/seed_service_account.py   # génère le compte de service
+uv run python migrations/apply_migrations.py       # crée/actualise les tables users / refresh_tokens
+uv run python migrations/seed_service_account.py   # génère le compte de service (role=user)
 # copie SERVICE_ACCOUNT_USERNAME / SERVICE_ACCOUNT_PASSWORD affichés dans .env
+
+uv run python migrations/seed_demo_users.py         # optionnel : comptes demo-user / demo-admin
 ```
 
 **Endpoints** :
 
 | Route | Rôle |
 |---|---|
-| `POST /auth/login` | `{username, password}` → `{access_token, refresh_token}` |
+| `POST /auth/login` | `{username, password}` (JSON) → `{access_token, refresh_token}` |
+| `POST /token` | `username=...&password=...` (form, OAuth2 Password Grant) → même réponse — alimente le bouton *Authorize* de `/docs` |
 | `POST /auth/refresh` | `{refresh_token}` → nouveau couple de tokens (rotation) |
-| `POST /chat` | Exige `Authorization: Bearer <access_token>` — 401 sinon |
+| `POST /chat` | Exige `Authorization: Bearer <access_token>` — 401 (`WWW-Authenticate: Bearer`) sinon |
+
+> `/auth/login` et `/token` partagent exactement la même logique
+> (`auth.authenticate_user` + `auth.issue_token_pair`) ; seul le format de la
+> requête change. `/auth/login` reste celui utilisé par l'IHM Streamlit
+> (JSON), `/token` suit le standard OAuth2 attendu par les outils/clients
+> génériques. Un échec renvoie **401** avec l'en-tête `WWW-Authenticate:
+> Bearer` et un message identique que le compte existe ou non
+> (anti-énumération).
 
 ### Monitoring — Langfuse, Prometheus, Grafana, Uptime Kuma
 
@@ -378,6 +392,10 @@ curl -X POST "http://localhost:8000/auth/login" \
   -H "Content-Type: application/json" \
   -d '{"username": "streamlit-ui", "password": "TON_MOT_DE_PASSE_DE_SERVICE"}'
 # → {"access_token": "...", "refresh_token": "...", "token_type": "bearer"}
+
+# Équivalent OAuth2 standard (form-urlencoded) — utilisé par le bouton Authorize de /docs
+curl -X POST "http://localhost:8000/token" \
+  -d "username=streamlit-ui&password=TON_MOT_DE_PASSE_DE_SERVICE"
 
 # Question à l'agent (authentification requise)
 curl -X POST "http://localhost:8000/chat" \

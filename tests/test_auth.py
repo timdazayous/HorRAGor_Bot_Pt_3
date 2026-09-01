@@ -72,6 +72,12 @@ class TestAccessToken:
         assert payload["sub"] == "streamlit-ui"
         assert payload["user_id"] == 1
         assert payload["type"] == "access"
+        assert payload["role"] == "user"
+
+    def test_role_is_embedded_when_provided(self):
+        token = auth.create_access_token(user_id=1, username="demo-admin", role="admin")
+        payload = auth.decode_access_token(token)
+        assert payload["role"] == "admin"
 
     def test_expired_token_is_rejected(self):
         now = datetime.now(timezone.utc)
@@ -104,7 +110,7 @@ class TestAccessToken:
 
 class TestGetUserByUsername:
     def test_found(self, monkeypatch):
-        row = {"id": 1, "username": "streamlit-ui", "password_hash": "hash"}
+        row = {"id": 1, "username": "streamlit-ui", "password_hash": "hash", "role": "user"}
         monkeypatch.setattr(auth, "get_conn", lambda: FakeConnection(FakeCursor(fetchone_result=row)))
 
         user = auth.get_user_by_username("streamlit-ui")
@@ -171,7 +177,7 @@ class TestRefreshTokenLifecycle:
         row = {
             "id": 42, "user_id": 1, "revoked": False,
             "expires_at": datetime.now(timezone.utc) + timedelta(days=1),
-            "username": "streamlit-ui",
+            "username": "streamlit-ui", "role": "user",
         }
         fake_cursor = FakeCursor(fetchone_result=row)
         fake_conn = FakeConnection(fake_cursor)
@@ -179,7 +185,7 @@ class TestRefreshTokenLifecycle:
 
         result = auth.validate_and_rotate_refresh_token("some-raw-token")
 
-        assert result == {"user_id": 1, "username": "streamlit-ui"}
+        assert result == {"user_id": 1, "username": "streamlit-ui", "role": "user"}
         # La rotation doit avoir émis un UPDATE ... revoked = TRUE
         assert any("UPDATE refresh_tokens" in q for q, _ in fake_cursor.executed)
         assert fake_conn.committed is True
@@ -195,7 +201,7 @@ class TestRefreshTokenLifecycle:
         row = {
             "id": 1, "user_id": 1, "revoked": True,
             "expires_at": datetime.now(timezone.utc) + timedelta(days=1),
-            "username": "streamlit-ui",
+            "username": "streamlit-ui", "role": "user",
         }
         fake_conn = FakeConnection(FakeCursor(fetchone_result=row))
         monkeypatch.setattr(auth, "get_conn", lambda: fake_conn)
@@ -207,7 +213,7 @@ class TestRefreshTokenLifecycle:
         row = {
             "id": 1, "user_id": 1, "revoked": False,
             "expires_at": datetime.now(timezone.utc) - timedelta(days=1),
-            "username": "streamlit-ui",
+            "username": "streamlit-ui", "role": "user",
         }
         fake_conn = FakeConnection(FakeCursor(fetchone_result=row))
         monkeypatch.setattr(auth, "get_conn", lambda: fake_conn)

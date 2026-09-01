@@ -11,7 +11,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, OAuth2PasswordRequestForm
 from langchain_core.messages import AIMessage, HumanMessage
 from loguru import logger
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -245,9 +245,44 @@ async def login(request: LoginRequest) -> TokenResponse:
     try:
         user = await asyncio.to_thread(auth.authenticate_user, request.username, request.password)
     except auth.AuthError:
-        raise HTTPException(status_code=401, detail="Identifiants invalides")
+        # Message identique, que le compte existe ou non (anti-énumération).
+        raise HTTPException(
+            status_code=401,
+            detail="Identifiants invalides",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-    tokens = await asyncio.to_thread(auth.issue_token_pair, user["id"], user["username"])
+    tokens = await asyncio.to_thread(
+        auth.issue_token_pair, user["id"], user["username"], user.get("role", "user")
+    )
+    return TokenResponse(**tokens)
+
+
+@app.post(
+    "/token",
+    response_model=TokenResponse,
+    tags=["Auth"],
+    summary="Login OAuth2 Password Grant (standard — alimente le bouton Authorize de /docs)",
+)
+async def token(form_data: OAuth2PasswordRequestForm = Depends()) -> TokenResponse:
+    """
+    Variante standard OAuth2 de /auth/login : identifiants transmis en
+    `application/x-www-form-urlencoded` (champs `username`/`password`) plutôt
+    qu'en JSON. Même logique métier, exposée pour les clients OAuth2 (Swagger
+    UI, outils standards) qui s'attendent à ce chemin et ce format précis.
+    """
+    try:
+        user = await asyncio.to_thread(auth.authenticate_user, form_data.username, form_data.password)
+    except auth.AuthError:
+        raise HTTPException(
+            status_code=401,
+            detail="Identifiants invalides",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    tokens = await asyncio.to_thread(
+        auth.issue_token_pair, user["id"], user["username"], user.get("role", "user")
+    )
     return TokenResponse(**tokens)
 
 
@@ -261,9 +296,11 @@ async def refresh(request: RefreshRequest) -> TokenResponse:
     try:
         identity = await asyncio.to_thread(auth.validate_and_rotate_refresh_token, request.refresh_token)
     except auth.AuthError as e:
-        raise HTTPException(status_code=401, detail=str(e))
+        raise HTTPException(status_code=401, detail=str(e), headers={"WWW-Authenticate": "Bearer"})
 
-    tokens = await asyncio.to_thread(auth.issue_token_pair, identity["user_id"], identity["username"])
+    tokens = await asyncio.to_thread(
+        auth.issue_token_pair, identity["user_id"], identity["username"], identity.get("role", "user")
+    )
     return TokenResponse(**tokens)
 
 

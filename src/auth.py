@@ -58,7 +58,7 @@ def get_user_by_username(username: str) -> Optional[dict]:
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
-                "SELECT id, username, password_hash FROM users WHERE username = %s",
+                "SELECT id, username, password_hash, role FROM users WHERE username = %s",
                 (username,),
             )
             row = cur.fetchone()
@@ -79,11 +79,12 @@ def authenticate_user(username: str, password: str) -> dict:
 # Access tokens (JWT, stateless)
 # ---------------------------------------------------------------------------
 
-def create_access_token(user_id: int, username: str) -> str:
+def create_access_token(user_id: int, username: str, role: str = "user") -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "sub": username,
         "user_id": user_id,
+        "role": role,
         "type": "access",
         "iat": now,
         "exp": now + timedelta(minutes=config.ACCESS_TOKEN_EXPIRE_MINUTES),
@@ -144,7 +145,7 @@ def validate_and_rotate_refresh_token(raw_token: str) -> dict:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT rt.id, rt.user_id, rt.expires_at, rt.revoked, u.username
+                SELECT rt.id, rt.user_id, rt.expires_at, rt.revoked, u.username, u.role
                 FROM refresh_tokens rt
                 JOIN users u ON u.id = rt.user_id
                 WHERE rt.token_hash = %s
@@ -162,7 +163,7 @@ def validate_and_rotate_refresh_token(raw_token: str) -> dict:
 
             cur.execute("UPDATE refresh_tokens SET revoked = TRUE WHERE id = %s", (row["id"],))
         conn.commit()
-        return {"user_id": row["user_id"], "username": row["username"]}
+        return {"user_id": row["user_id"], "username": row["username"], "role": row["role"]}
     finally:
         conn.close()
 
@@ -185,8 +186,8 @@ def revoke_all_tokens_for_user(user_id: int) -> None:
 # Point d'entrée haut niveau — émission d'une paire de tokens
 # ---------------------------------------------------------------------------
 
-def issue_token_pair(user_id: int, username: str) -> dict:
-    access_token = create_access_token(user_id, username)
+def issue_token_pair(user_id: int, username: str, role: str = "user") -> dict:
+    access_token = create_access_token(user_id, username, role)
     refresh_token = create_refresh_token(user_id)
     logger.info(f"[Auth] Nouvelle paire de tokens émise pour {username!r}")
     return {

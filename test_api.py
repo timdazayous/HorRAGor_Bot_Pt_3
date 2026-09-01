@@ -278,11 +278,13 @@ class TestAuthEndpoints:
     def test_login_success_returns_token_pair(self, monkeypatch):
         monkeypatch.setattr(
             main_module.auth, "authenticate_user",
-            lambda username, password: {"id": 1, "username": username},
+            lambda username, password: {"id": 1, "username": username, "role": "user"},
         )
         monkeypatch.setattr(
             main_module.auth, "issue_token_pair",
-            lambda user_id, username: {"access_token": "a", "refresh_token": "b", "token_type": "bearer"},
+            lambda user_id, username, role="user": {
+                "access_token": "a", "refresh_token": "b", "token_type": "bearer"
+            },
         )
 
         response = client.post("/auth/login", json={"username": "streamlit-ui", "password": "correct"})
@@ -292,7 +294,7 @@ class TestAuthEndpoints:
         assert data["access_token"] == "a"
         assert data["refresh_token"] == "b"
 
-    def test_login_failure_returns_401(self, monkeypatch):
+    def test_login_failure_returns_401_with_www_authenticate_header(self, monkeypatch):
         def _raise(username, password):
             raise main_module.auth.AuthError("Identifiants invalides")
         monkeypatch.setattr(main_module.auth, "authenticate_user", _raise)
@@ -300,15 +302,48 @@ class TestAuthEndpoints:
         response = client.post("/auth/login", json={"username": "streamlit-ui", "password": "wrong"})
 
         assert response.status_code == 401
+        assert response.headers["www-authenticate"] == "Bearer"
+
+    def test_token_endpoint_success_returns_token_pair(self, monkeypatch):
+        monkeypatch.setattr(
+            main_module.auth, "authenticate_user",
+            lambda username, password: {"id": 1, "username": username, "role": "admin"},
+        )
+        captured = {}
+
+        def _issue(user_id, username, role="user"):
+            captured["role"] = role
+            return {"access_token": "a", "refresh_token": "b", "token_type": "bearer"}
+        monkeypatch.setattr(main_module.auth, "issue_token_pair", _issue)
+
+        response = client.post(
+            "/token", data={"username": "demo-admin", "password": "correct"}
+        )
+
+        assert response.status_code == 200
+        assert response.json()["access_token"] == "a"
+        assert captured["role"] == "admin"
+
+    def test_token_endpoint_failure_returns_401(self, monkeypatch):
+        def _raise(username, password):
+            raise main_module.auth.AuthError("Identifiants invalides")
+        monkeypatch.setattr(main_module.auth, "authenticate_user", _raise)
+
+        response = client.post("/token", data={"username": "demo-user", "password": "wrong"})
+
+        assert response.status_code == 401
+        assert response.headers["www-authenticate"] == "Bearer"
 
     def test_refresh_success_returns_new_token_pair(self, monkeypatch):
         monkeypatch.setattr(
             main_module.auth, "validate_and_rotate_refresh_token",
-            lambda raw_token: {"user_id": 1, "username": "streamlit-ui"},
+            lambda raw_token: {"user_id": 1, "username": "streamlit-ui", "role": "user"},
         )
         monkeypatch.setattr(
             main_module.auth, "issue_token_pair",
-            lambda user_id, username: {"access_token": "new-a", "refresh_token": "new-b", "token_type": "bearer"},
+            lambda user_id, username, role="user": {
+                "access_token": "new-a", "refresh_token": "new-b", "token_type": "bearer"
+            },
         )
 
         response = client.post("/auth/refresh", json={"refresh_token": "some-refresh-token"})
@@ -324,6 +359,7 @@ class TestAuthEndpoints:
         response = client.post("/auth/refresh", json={"refresh_token": "already-used"})
 
         assert response.status_code == 401
+        assert response.headers["www-authenticate"] == "Bearer"
 
     def test_chat_with_valid_token_succeeds(self):
         app.dependency_overrides.pop(require_auth, None)
