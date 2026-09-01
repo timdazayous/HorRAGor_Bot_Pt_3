@@ -8,10 +8,11 @@ successives, chacune corrigeant les limites de la précédente :
 |---|---|---|
 | **Partie 1** | Pipeline d'ingestion de données — construire la base de connaissances (1 179 films, 5 sources, Supabase) | ✅ Acquis, socle de données |
 | **Partie 2** | Agent conversationnel monolithique (architecture **ReAct**) — un seul LLM, 6 tools, "Le Juge" évaluateur | ✅ Acquis, **remplacé par la Partie 3** |
-| **Partie 3** | Architecture **multi-agent distribuée** (LangGraph) + industrialisation MLOps complète (monitoring, tests, docs, CI/CD) | 🚧 En cours — ce README |
+| **Partie 3** | Architecture **multi-agent distribuée** (LangGraph) + industrialisation MLOps complète (monitoring, tests, docs, CI/CD) | ✅ Acquis — ce README |
+| **Projet final sécurité** | Durcissement de l'API : OAuth2, rôles, rotation/révocation, rate limiting, CORS, fail-closed (voir [`projet-final-horragor.md`](projet-final-horragor.md)) | ✅ Acquis — voir [Sécurité](#authentification--refresh-tokens) |
 
-Ce document couvre l'état actuel du projet (Partie 3) et résume les deux
-parties précédentes pour comprendre d'où vient le code.
+Ce document couvre l'état actuel du projet (Partie 3 + durcissement sécurité)
+et résume les deux parties précédentes pour comprendre d'où vient le code.
 
 ---
 
@@ -36,7 +37,7 @@ parties précédentes pour comprendre d'où vient le code.
   - [Structure du projet](#structure-du-projet)
   - [Dépannage](#dépannage)
 - [Branches de développement](#branches-de-développement)
-- [Prochaine étape — semaine sécurité](#prochaine-étape--semaine-sécurité)
+- [Sécurité — bilan du projet final](#sécurité--bilan-du-projet-final)
 
 ---
 
@@ -186,7 +187,7 @@ dessinée à la main) est disponible dans la
 | Monitoring agent | **Langfuse** (auto-hébergé) |
 | Métriques | **Prometheus** + **Grafana** |
 | Supervision disponibilité | **Uptime Kuma** |
-| Authentification | JWT (`pyjwt`) + refresh tokens opaques, mots de passe hashés (`bcrypt`) |
+| Authentification | JWT (`pyjwt`) + refresh tokens opaques, rôles, rate limiting, mots de passe hashés (`bcrypt`) |
 | Logs | **Loguru** (interception unifiée de tout `logging` stdlib) |
 | Tests | `pytest` + `pytest-cov` (couverture ≥ 80 %) |
 | Documentation | **Sphinx** (autodoc + OpenAPI + Mermaid) |
@@ -377,7 +378,7 @@ uv run pytest
 Lance toute la suite (API, graphe multi-agent, outils, UI Streamlit) avec un
 rapport de couverture. Le seuil `--cov-fail-under=80` (configuré dans
 `pyproject.toml`) fait échouer la commande si la couverture de `src/` et
-`app_frontend.py` repasse sous 80 % — actuellement **~92 %**.
+`app_frontend.py` repasse sous 80 % — actuellement **~93 %**.
 
 - `tests/` : tests unitaires (mocks LangChain/Groq/psycopg2/FAISS — aucun
   appel réseau réel), dont `tests/test_auth.py` (hash, JWT, rotation des
@@ -451,6 +452,15 @@ curl -X POST "http://localhost:8000/auth/refresh" \
   -H "Content-Type: application/json" \
   -d '{"refresh_token": "<refresh_token>"}'
 
+# Déconnexion — révoque le refresh token courant
+curl -X POST "http://localhost:8000/logout" \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token": "<refresh_token>"}'
+
+# Recharger l'index FAISS (réservé au rôle admin — 403 sinon)
+curl -X POST "http://localhost:8000/admin/reload-index" \
+  -H "Authorization: Bearer <access_token_admin>"
+
 # Infos système
 curl http://localhost:8000/info
 ```
@@ -479,7 +489,8 @@ HorRAGor_Bot_Pt_3/
 ├── src/
 │   ├── main.py                        # API FastAPI — endpoint /chat, branche le graphe
 │   ├── config.py                      # Configuration LLM (Groq) et chemins
-│   ├── auth.py                        # Authentification par Refresh Tokens
+│   ├── auth.py                        # Authentification par Refresh Tokens (rôles, rotation, révocation)
+│   ├── rate_limit.py                  # Rate limiting anti brute-force (/token, /auth/login)
 │   ├── metrics.py                     # Instrumentation Prometheus par agent
 │   ├── logging_config.py              # Journalisation Loguru unifiée
 │   ├── models/state.py                # AgentState — State partagé multi-agent
@@ -491,9 +502,11 @@ HorRAGor_Bot_Pt_3/
 │       ├── router.py                  # Aiguillage conditionnel
 │       └── pipeline.py                # Assemblage et compilation du StateGraph
 ├── docs/                              # Documentation Sphinx (source + scripts de génération)
-├── migrations/                        # Tables auth (users, refresh_tokens) + seed du compte de service
+├── migrations/                        # Tables auth (users + role, refresh_tokens) + seed comptes
 ├── monitoring/                        # Config Prometheus + provisioning Grafana
-├── tests/                             # Tests unitaires Partie 3
+├── tests/                             # Tests unitaires Partie 3 + sécurité
+├── test_api.py                        # Tests de contrat API (auth, admin, durcissement inclus)
+├── test_e2e.py                        # Scénario de bout en bout — couche sécurité, autonome
 ├── .github/workflows/ci.yml           # Pipeline CI/CD
 ├── docker-compose.yml                 # API + Langfuse + Prometheus + Grafana + Uptime Kuma
 ├── Dockerfile.api                     # Image de l'API multi-agent
@@ -537,18 +550,30 @@ HorRAGor_Bot_Pt_3/
 
 ---
 
-## Prochaine étape — semaine sécurité
+## Sécurité — bilan du projet final
 
-Le cahier des charges MLOps prévoit un dernier livrable pour la semaine dédiée
-à la sécurité :
+Le cahier des charges de la semaine sécurité ([`projet-final-horragor.md`](projet-final-horragor.md))
+verrouille l'accès à l'API multi-agent en 5 parties. Toutes sont faites,
+prouvées par [`test_e2e.py`](test_e2e.py) (scénario complet, `uv run python test_e2e.py`)
+et par les classes `TestAuthEndpoints` / `TestAdminEndpoints` / `TestHardening`
+de [`test_api.py`](test_api.py) :
 
-- ✅ **Couche Intelligence** : authentification par **Refresh Tokens** entre
-  l'IHM et l'API multi-agent — fait (voir section Authentification ci-dessus).
+| Partie | Livrable | Statut |
+|---|---|---|
+| 1 — Authentification | `POST /token` (OAuth2 Password Grant) + `/auth/login`, mots de passe hachés (bcrypt), 401 + `WWW-Authenticate` | ✅ |
+| 2 — Protéger le graphe | `require_auth` (algorithme imposé, refresh token refusé sur route ressource), `/chat` protégé avant tout appel de nœud, corps validé par Pydantic | ✅ |
+| 3 — Refresh robuste | Rotation à usage unique (`/auth/refresh`) + révocation (`POST /logout`) | ✅ |
+| 4 — Autorisation par rôle | `require_admin` (claim `role`), `POST /admin/reload-index` réservée à `role=admin` (403 sinon) | ✅ |
+| 5 — Durcissement | `JWT_SECRET_KEY` fail-closed, rate limiting `/token`+`/auth/login` (429), CORS restreint, anti-énumération, journalisation Loguru des refus | ✅ |
+
+Détail technique de chaque point : voir [Authentification — Refresh Tokens](#authentification--refresh-tokens)
+ci-dessus.
+
+**Hors périmètre de ce livrable** (items plus larges du cahier des charges
+MLOps de la Partie 3, non couverts par `projet-final-horragor.md`) :
 - **Couche Données** : base de données encapsulée derrière sa propre API,
   dans un réseau Docker privé **étanche** (inaccessible de l'extérieur).
 - **Couche Présentation** : UI Streamlit conteneurisée, communication
   chiffrée vers l'API.
 - **Gouvernance** : CI/CD étendu aux 3 couches, anomalies trackées en
   **GitHub Issues**.
-
-Ce README sera complété en conséquence une fois ces briques en place.
