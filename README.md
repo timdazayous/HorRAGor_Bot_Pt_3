@@ -292,6 +292,17 @@ uv run python migrations/seed_demo_users.py         # optionnel : comptes demo-u
 > Bearer` et un message identique que le compte existe ou non
 > (anti-énumération).
 
+**Le graphe est protégé** : `require_auth` (dépendance FastAPI sur `/chat`)
+décode le JWT en imposant l'algorithme (`algorithms=["HS256"]`), vérifie
+l'expiration, et n'accepte que `type=access` — un refresh token présenté sur
+`/chat` est donc rejeté (**401**), qu'il soit opaque comme émis en pratique
+ou un JWT `type=refresh` forgé. FastAPI résout `require_auth` avant même
+d'exécuter le corps de l'endpoint : sans token valide, **aucun nœud du graphe
+n'est jamais invoqué**. Le corps de `/chat` est validé par le modèle
+Pydantic `ChatRequest` (**422** si malformé). Voir `TestAuthEndpoints` dans
+`test_api.py` pour le détail de ces garanties (y compris token signé en
+algorithme `none`).
+
 ### Monitoring — Langfuse, Prometheus, Grafana, Uptime Kuma
 
 | Service | URL | Rôle |

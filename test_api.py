@@ -6,10 +6,14 @@ aucun appel Groq, Supabase ou Wikipedia réel n'est déclenché — la logique d
 graphe elle-même est testée séparément dans tests/test_graph_pipeline.py.
 """
 
+import secrets
+
+import jwt
 import pytest
 from fastapi.testclient import TestClient
 
 import src.main as main_module
+from src import config
 from src.main import ChatRequest, ChatResponse, JudgeVerdict, app, require_auth
 
 client = TestClient(app)
@@ -274,6 +278,75 @@ class TestAuthEndpoints:
             headers={"Authorization": "Bearer not-a-real-token"},
         )
         assert response.status_code == 401
+
+    def test_chat_without_token_never_invokes_the_graph(self, monkeypatch):
+        """401 doit être renvoyé avant même l'exécution du moindre nœud du graphe."""
+        app.dependency_overrides.pop(require_auth, None)
+
+        def _fail_if_called(*args, **kwargs):
+            raise AssertionError("Le graphe ne doit jamais être invoqué sans authentification")
+        monkeypatch.setattr(main_module.agent_graph, "invoke", _fail_if_called)
+
+        response = client.post("/chat", json={"question": "test"})
+
+        assert response.status_code == 401
+
+    def test_chat_with_a_real_refresh_token_is_rejected(self):
+        """
+        Un refresh token (chaîne opaque, pas un JWT) présenté sur une route de
+        ressource doit être refusé — il échoue simplement au décodage JWT.
+        """
+        app.dependency_overrides.pop(require_auth, None)
+        opaque_refresh_token = secrets.token_urlsafe(48)
+
+        response = client.post(
+            "/chat", json={"question": "test"},
+            headers={"Authorization": f"Bearer {opaque_refresh_token}"},
+        )
+
+        assert response.status_code == 401
+
+    def test_chat_with_a_refresh_typed_jwt_is_rejected(self):
+        """
+        Même si un refresh token était un JWT bien formé avec type=refresh
+        (défense en profondeur), il doit être refusé sur une route protégée
+        par require_auth — seul type=access est accepté.
+        """
+        app.dependency_overrides.pop(require_auth, None)
+        refresh_payload = {"sub": "someone", "user_id": 1, "type": "refresh"}
+        forged_refresh_jwt = jwt.encode(
+            refresh_payload, config.JWT_SECRET_KEY, algorithm=config.JWT_ALGORITHM
+        )
+
+        response = client.post(
+            "/chat", json={"question": "test"},
+            headers={"Authorization": f"Bearer {forged_refresh_jwt}"},
+        )
+
+        assert response.status_code == 401
+
+    def test_chat_with_none_algorithm_token_is_rejected(self):
+        """L'algorithme est imposé (HS256) — un token signé avec 'none' doit être refusé."""
+        app.dependency_overrides.pop(require_auth, None)
+        forged_unsigned_token = jwt.encode(
+            {"sub": "attacker", "user_id": 1, "type": "access"}, key=None, algorithm="none"
+        )
+
+        response = client.post(
+            "/chat", json={"question": "test"},
+            headers={"Authorization": f"Bearer {forged_unsigned_token}"},
+        )
+
+        assert response.status_code == 401
+
+    def test_chat_rejects_malformed_body_even_when_authenticated(self):
+        """Le corps est validé par un modèle Pydantic — pas de dict brut accepté tel quel."""
+        token = main_module.auth.create_access_token(user_id=1, username="streamlit-ui")
+        response = client.post(
+            "/chat", json={"not_a_question_field": "test"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 422
 
     def test_login_success_returns_token_pair(self, monkeypatch):
         monkeypatch.setattr(
