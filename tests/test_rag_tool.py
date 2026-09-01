@@ -348,3 +348,20 @@ class TestSemanticSearch:
 
         assert [score for score, _ in hits] == [0.9, 0.5]
         assert [f["id"] for _, f in hits] == [10, 20]
+
+
+class TestReloadIndex:
+    """reload_index() — utilisé par la route d'administration POST /admin/reload-index."""
+
+    def test_reloads_index_and_id_map_from_disk(self, monkeypatch):
+        fake_index = type("I", (), {"ntotal": 1179})()
+        fake_id_map = np.array([1, 2, 3])
+
+        monkeypatch.setattr(rag_tool.faiss, "read_index", lambda path: fake_index)
+        monkeypatch.setattr(rag_tool.np, "load", lambda path: fake_id_map)
+
+        vector_count = rag_tool.reload_index()
+
+        assert vector_count == 1179
+        assert rag_tool._index is fake_index
+        assert rag_tool._id_map is fake_id_map

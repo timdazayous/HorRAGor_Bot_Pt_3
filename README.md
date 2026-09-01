@@ -283,6 +283,7 @@ uv run python migrations/seed_demo_users.py         # optionnel : comptes demo-u
 | `POST /token` | `username=...&password=...` (form, OAuth2 Password Grant) → même réponse — alimente le bouton *Authorize* de `/docs` |
 | `POST /auth/refresh` | `{refresh_token}` → nouveau couple de tokens (rotation) |
 | `POST /chat` | Exige `Authorization: Bearer <access_token>` — 401 (`WWW-Authenticate: Bearer`) sinon |
+| `POST /admin/reload-index` | Exige en plus `role=admin` — 403 sinon |
 
 > `/auth/login` et `/token` partagent exactement la même logique
 > (`auth.authenticate_user` + `auth.issue_token_pair`) ; seul le format de la
@@ -302,6 +303,14 @@ n'est jamais invoqué**. Le corps de `/chat` est validé par le modèle
 Pydantic `ChatRequest` (**422** si malformé). Voir `TestAuthEndpoints` dans
 `test_api.py` pour le détail de ces garanties (y compris token signé en
 algorithme `none`).
+
+**Autorisation par rôle** : `require_admin` étend `require_auth` d'une
+vérification du claim `role`. Un utilisateur authentifié mais non-admin reçoit
+**403** (pas 401 : il est bien identifié, juste pas autorisé) — voir
+`TestAdminEndpoints` dans `test_api.py`. Route d'administration exposée :
+`POST /admin/reload-index`, qui recharge l'index FAISS (`src/tools/rag_tool.py::reload_index`)
+depuis le disque sans redémarrer l'API, utile après un ré-enrichissement du
+catalogue de films.
 
 ### Monitoring — Langfuse, Prometheus, Grafana, Uptime Kuma
 

@@ -444,5 +444,51 @@ class TestAuthEndpoints:
         assert response.status_code == 200
 
 
+class TestAdminEndpoints:
+    """
+    Autorisation par rôle : /admin/reload-index. La dépendance require_auth
+    reste neutralisée par bypass_auth (autouse) mais sans role="admin" —
+    exactement le cas "authentifié mais pas autorisé" qu'on veut vérifier.
+    """
+
+    def test_reload_index_without_token_is_401(self):
+        app.dependency_overrides.pop(require_auth, None)
+        response = client.post("/admin/reload-index")
+        assert response.status_code == 401
+
+    def test_reload_index_with_user_role_is_403(self):
+        """Un utilisateur authentifié mais non-admin doit être rejeté (403, pas 401)."""
+        response = client.post("/admin/reload-index")
+        assert response.status_code == 403
+
+    def test_reload_index_with_admin_role_succeeds(self, monkeypatch):
+        app.dependency_overrides[require_auth] = lambda: {"sub": "demo-admin", "user_id": 2, "role": "admin"}
+        monkeypatch.setattr(main_module, "reload_index", lambda: 1179)
+
+        response = client.post("/admin/reload-index")
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "reloaded", "vector_count": 1179}
+
+    def test_reload_index_with_real_admin_token_succeeds(self, monkeypatch):
+        """Bout en bout avec un vrai JWT porteur du claim role=admin (pas un override de dépendance)."""
+        app.dependency_overrides.pop(require_auth, None)
+        monkeypatch.setattr(main_module, "reload_index", lambda: 1179)
+        token = main_module.auth.create_access_token(user_id=2, username="demo-admin", role="admin")
+
+        response = client.post("/admin/reload-index", headers={"Authorization": f"Bearer {token}"})
+
+        assert response.status_code == 200
+
+    def test_reload_index_with_real_user_token_is_403(self):
+        """Bout en bout avec un vrai JWT role=user (défaut) — pas d'accès admin."""
+        app.dependency_overrides.pop(require_auth, None)
+        token = main_module.auth.create_access_token(user_id=1, username="streamlit-ui")
+
+        response = client.post("/admin/reload-index", headers={"Authorization": f"Bearer {token}"})
+
+        assert response.status_code == 403
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

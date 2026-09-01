@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from src import auth
 from src.graph.pipeline import app as agent_graph
 from src.logging_config import setup_logging
-from src.tools.rag_tool import initialize_retriever
+from src.tools.rag_tool import initialize_retriever, reload_index
 
 # ============================================================================
 # CONFIGURATION
@@ -81,11 +81,27 @@ async def require_auth(
     Authorization: Bearer <token>). Lève 401 si absent, invalide ou expiré.
     """
     if credentials is None:
-        raise HTTPException(status_code=401, detail="Authentification requise")
+        raise HTTPException(
+            status_code=401, detail="Authentification requise",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     try:
         return auth.decode_access_token(credentials.credentials)
     except auth.AuthError as e:
-        raise HTTPException(status_code=401, detail=str(e))
+        raise HTTPException(status_code=401, detail=str(e), headers={"WWW-Authenticate": "Bearer"})
+
+
+async def require_admin(identity: dict = Depends(require_auth)) -> dict:
+    """
+    Dépendance FastAPI : comme require_auth, mais exige en plus le rôle
+    `admin` porté par le claim `role` de l'access token. Un utilisateur
+    authentifié mais non-admin reçoit 403 (et non 401 : il est bien identifié,
+    seulement pas autorisé).
+    """
+    if identity.get("role") != "admin":
+        logger.warning(f"[Auth] Accès admin refusé pour {identity.get('sub')!r} (role={identity.get('role')!r})")
+        raise HTTPException(status_code=403, detail="Rôle admin requis")
+    return identity
 
 
 # ============================================================================
@@ -212,6 +228,15 @@ class ErrorResponse(BaseModel):
     error: str
     detail: str
     request_id: Optional[str] = None
+
+
+class ReloadIndexResponse(BaseModel):
+    """
+    Résultat du rechargement de l'index FAISS.
+    """
+
+    status: str = "reloaded"
+    vector_count: int
 
 
 # ============================================================================
@@ -400,6 +425,25 @@ async def chat(request: ChatRequest, _identity: dict = Depends(require_auth)) ->
             status_code=500,
             detail=f"Erreur lors de la génération : {str(e)}"
         )
+
+
+@app.post(
+    "/admin/reload-index",
+    response_model=ReloadIndexResponse,
+    responses={
+        401: {"model": ErrorResponse, "description": "Authentification manquante, invalide ou expirée"},
+        403: {"model": ErrorResponse, "description": "Rôle admin requis"},
+    },
+    tags=["Admin"],
+    summary="Recharge l'index FAISS depuis le disque (réservé au rôle admin)",
+)
+async def admin_reload_index(_identity: dict = Depends(require_admin)) -> ReloadIndexResponse:
+    """
+    Recharge l'index FAISS + id_map depuis `data/faiss_index/` sans redémarrer
+    l'API — utile après un ré-enrichissement du catalogue de films.
+    """
+    vector_count = await asyncio.to_thread(reload_index)
+    return ReloadIndexResponse(vector_count=vector_count)
 
 
 @app.get(

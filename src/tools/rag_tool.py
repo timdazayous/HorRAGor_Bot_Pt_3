@@ -48,6 +48,20 @@ def initialize_retriever() -> None:
     _get_retriever()
 
 
+def reload_index() -> int:
+    """
+    Force le rechargement de l'index FAISS + id_map depuis le disque (nouvel
+    index reconstruit après un enrichissement du catalogue, sans redémarrer
+    l'API ni recharger le modèle d'embeddings). Réservé à la route
+    d'administration. Retourne le nombre de vecteurs chargés.
+    """
+    global _index, _id_map
+    _index  = faiss.read_index(str(_FAISS_INDEX_PATH))
+    _id_map = np.load(str(_ID_MAP_PATH))
+    logger.info(f"[Admin] Index FAISS rechargé : {_index.ntotal} vecteurs")
+    return _index.ntotal
+
+
 def _get_conn() -> psycopg2.extensions.connection:
     db_url = os.environ.get("SUPABASE_DB_URL") or os.environ.get("DATABASE_URL")
     if not db_url:
