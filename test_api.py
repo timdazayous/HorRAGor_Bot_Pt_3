@@ -14,9 +14,18 @@ from fastapi.testclient import TestClient
 
 import src.main as main_module
 from src import config
+from src import rate_limit as rate_limit_module
 from src.main import ChatRequest, ChatResponse, JudgeVerdict, app, require_auth
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    """Isole chaque test du compteur anti brute-force (état module-level partagé)."""
+    rate_limit_module.reset()
+    yield
+    rate_limit_module.reset()
 
 
 @pytest.fixture(autouse=True)
@@ -488,6 +497,45 @@ class TestAdminEndpoints:
         response = client.post("/admin/reload-index", headers={"Authorization": f"Bearer {token}"})
 
         assert response.status_code == 403
+
+
+class TestHardening:
+    """Durcissement (Partie 5 sécurité) : rate limiting sur /token, CORS restreint."""
+
+    def test_token_endpoint_rate_limited_beyond_quota(self, monkeypatch):
+        monkeypatch.setattr(config, "RATE_LIMIT_LOGIN_MAX_ATTEMPTS", 3)
+
+        def _raise(username, password):
+            raise main_module.auth.AuthError("Identifiants invalides")
+        monkeypatch.setattr(main_module.auth, "authenticate_user", _raise)
+
+        for _ in range(3):
+            response = client.post("/token", data={"username": "attacker", "password": "wrong"})
+            assert response.status_code == 401
+
+        response = client.post("/token", data={"username": "attacker", "password": "wrong"})
+        assert response.status_code == 429
+
+    def test_login_endpoint_has_its_own_quota_independent_of_token(self, monkeypatch):
+        """/token et /auth/login sont rate-limités indépendamment (routes distinctes)."""
+        monkeypatch.setattr(config, "RATE_LIMIT_LOGIN_MAX_ATTEMPTS", 1)
+
+        def _raise(username, password):
+            raise main_module.auth.AuthError("Identifiants invalides")
+        monkeypatch.setattr(main_module.auth, "authenticate_user", _raise)
+
+        assert client.post("/token", data={"username": "a", "password": "b"}).status_code == 401
+        assert client.post("/token", data={"username": "a", "password": "b"}).status_code == 429
+        # /auth/login n'a pas encore consommé son propre quota
+        assert client.post("/auth/login", json={"username": "a", "password": "b"}).status_code == 401
+
+    def test_cors_allows_configured_origin(self):
+        response = client.get("/health", headers={"Origin": config.ALLOWED_ORIGIN})
+        assert response.headers.get("access-control-allow-origin") == config.ALLOWED_ORIGIN
+
+    def test_cors_rejects_unlisted_origin(self):
+        response = client.get("/health", headers={"Origin": "https://attacker.example"})
+        assert "access-control-allow-origin" not in response.headers
 
 
 if __name__ == "__main__":

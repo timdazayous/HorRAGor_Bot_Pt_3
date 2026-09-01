@@ -30,7 +30,25 @@ JUDGE_MAX_RETRIES        = int(os.environ.get("JUDGE_MAX_RETRIES", 2))
 JUDGE_CONFIDENCE_THRESHOLD = float(os.environ.get("JUDGE_CONFIDENCE_THRESHOLD", 0.65))
 
 # Authentification — verrouille les échanges IHM <-> API (Refresh Tokens)
-JWT_SECRET_KEY   = os.environ.get("JWT_SECRET_KEY", "changeme-dev-secret-do-not-use-in-prod")
+#
+# Fail-closed : pas de valeur par défaut silencieuse. Une clé absente compromet
+# tous les tokens émis (un attaquant qui devine/lit la valeur par défaut du
+# code source pourrait forger des access tokens valides) — on préfère un
+# crash au démarrage à une API qui tourne avec une signature prévisible.
+JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY")
+if not JWT_SECRET_KEY:
+    raise RuntimeError(
+        "JWT_SECRET_KEY absente de l'environnement — l'application refuse de "
+        "démarrer sans clé de signature explicite (fail-closed). "
+        "Génère-en une avec `openssl rand -hex 32` et renseigne-la dans .env "
+        "(voir .env.example)."
+    )
+
 JWT_ALGORITHM    = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", 30))
 REFRESH_TOKEN_EXPIRE_DAYS   = int(os.environ.get("REFRESH_TOKEN_EXPIRE_DAYS", 7))
+
+# Durcissement (projet final sécurité — Partie 5)
+ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "http://localhost:8501")  # IHM Streamlit
+RATE_LIMIT_LOGIN_MAX_ATTEMPTS   = int(os.environ.get("RATE_LIMIT_LOGIN_MAX_ATTEMPTS", 5))
+RATE_LIMIT_LOGIN_WINDOW_SECONDS = int(os.environ.get("RATE_LIMIT_LOGIN_WINDOW_SECONDS", 60))

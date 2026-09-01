@@ -1,5 +1,8 @@
 """Tests unitaires — src/config.py (valeurs par défaut, lecture des variables d'env)."""
 import importlib
+import os
+
+import pytest
 
 
 def test_default_values_when_env_unset(monkeypatch):
@@ -42,3 +45,24 @@ def test_env_overrides_are_respected(monkeypatch):
 def test_faiss_index_dir_points_under_data():
     from src import config
     assert config.FAISS_INDEX_DIR == config.DATA_DIR / "faiss_index"
+
+
+def test_missing_jwt_secret_key_fails_closed(monkeypatch):
+    """L'app refuse de démarrer sans JWT_SECRET_KEY — pas de valeur par défaut silencieuse."""
+    from src import config
+    original_secret = os.environ.get("JWT_SECRET_KEY")
+    monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+    # Sans ça, le `from dotenv import load_dotenv` ré-exécuté par reload()
+    # relirait .env (présent en local) et repeuplerait la variable qu'on
+    # vient de supprimer — on veut simuler un déploiement où .env n'existe
+    # pas du tout. On patche la source (dotenv.load_dotenv), pas l'attribut
+    # du module config, qui serait de toute façon réimporté par le reload.
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
+
+    try:
+        with pytest.raises(RuntimeError, match="JWT_SECRET_KEY"):
+            importlib.reload(config)
+    finally:
+        # Repli : restaure une clé pour ne pas casser les tests suivants du module.
+        monkeypatch.setenv("JWT_SECRET_KEY", original_secret or "test-secret-restored-after-fail-closed-test")
+        importlib.reload(config)

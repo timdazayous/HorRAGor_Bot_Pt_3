@@ -41,6 +41,7 @@ jobs:
         run: uv run pytest
         env:
           GROQ_API_KEY: dummy-not-used-tests-are-mocked
+          JWT_SECRET_KEY: dummy-ci-secret-not-used-in-prod
 
   # ---------------------------------------------------------------------------
   # Documentation Sphinx — doit rester générable sans avertissement
@@ -58,6 +59,8 @@ jobs:
         run: |
           uv run python docs/generate_openapi.py
           uv run python docs/generate_graph_diagram.py
+        env:
+          JWT_SECRET_KEY: dummy-ci-secret-not-used-in-prod
       - name: Build Sphinx (warnings = erreurs)
         run: uv run sphinx-build -b html docs/source docs/build -W
 

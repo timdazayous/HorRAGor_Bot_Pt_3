@@ -67,6 +67,48 @@
         }
       }
     },
+    "/token": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Login OAuth2 Password Grant (standard — alimente le bouton Authorize de /docs)",
+        "description": "Variante standard OAuth2 de /auth/login : identifiants transmis en\n`application/x-www-form-urlencoded` (champs `username`/`password`) plutôt\nqu'en JSON. Même logique métier, exposée pour les clients OAuth2 (Swagger\nUI, outils standards) qui s'attendent à ce chemin et ce format précis.",
+        "operationId": "token_token_post",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_token_token_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/auth/refresh": {
       "post": {
         "tags": [
@@ -205,6 +247,53 @@
         ]
       }
     },
+    "/admin/reload-index": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Recharge l'index FAISS depuis le disque (réservé au rôle admin)",
+        "description": "Recharge l'index FAISS + id_map depuis `data/faiss_index/` sans redémarrer\nl'API — utile après un ré-enrichissement du catalogue de films.",
+        "operationId": "admin_reload_index_admin_reload_index_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReloadIndexResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentification manquante, invalide ou expirée",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Rôle admin requis",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/info": {
       "get": {
         "tags": [
@@ -228,6 +317,65 @@
   },
   "components": {
     "schemas": {
+      "Body_token_token_post": {
+        "properties": {
+          "grant_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^password$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grant Type"
+          },
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "title": "Password"
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope",
+            "default": ""
+          },
+          "client_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Id"
+          },
+          "client_secret": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "format": "password",
+            "title": "Client Secret"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "Body_token_token_post"
+      },
       "ChatRequest": {
         "properties": {
           "question": {
@@ -430,6 +578,25 @@
           "refresh_token"
         ],
         "title": "RefreshRequest"
+      },
+      "ReloadIndexResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "reloaded"
+          },
+          "vector_count": {
+            "type": "integer",
+            "title": "Vector Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "vector_count"
+        ],
+        "title": "ReloadIndexResponse",
+        "description": "Résultat du rechargement de l'index FAISS."
       },
       "TokenResponse": {
         "properties": {

@@ -312,6 +312,21 @@ vérification du claim `role`. Un utilisateur authentifié mais non-admin reçoi
 depuis le disque sans redémarrer l'API, utile après un ré-enrichissement du
 catalogue de films.
 
+**Durcissement** :
+- `JWT_SECRET_KEY` est **fail-closed** (`src/config.py`) : sans elle dans
+  l'environnement, l'API refuse carrément de démarrer plutôt que de tourner
+  avec une clé par défaut prévisible (génère la tienne avec `openssl rand -hex 32`).
+- **Rate limiting anti brute-force** sur `/token` et `/auth/login`
+  (`src/rate_limit.py`, fenêtre glissante en mémoire, par IP × route,
+  configurable via `RATE_LIMIT_LOGIN_MAX_ATTEMPTS`/`_WINDOW_SECONDS`) — **429**
+  au-delà du quota (5 tentatives / 60 s par défaut).
+- **CORS restreint** à `ALLOWED_ORIGIN` (l'IHM Streamlit, `http://localhost:8501`
+  par défaut) — jamais `*` alors que `allow_credentials=True`.
+- **Anti-énumération** : message d'échec de connexion identique, que le
+  compte existe ou non.
+- **Journalisation Loguru** de toute tentative refusée (login échoué, token
+  rejeté, 403 admin, quota dépassé) — jamais le mot de passe ni le token en clair.
+
 ### Monitoring — Langfuse, Prometheus, Grafana, Uptime Kuma
 
 | Service | URL | Rôle |

@@ -11,15 +11,17 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, OAuth2PasswordRequestForm
 from langchain_core.messages import AIMessage, HumanMessage
 from loguru import logger
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, ConfigDict, Field
 
-from src import auth
+from src import auth, config
 from src.graph.pipeline import app as agent_graph
 from src.logging_config import setup_logging
+from src.rate_limit import enforce_login_rate_limit
 from src.tools.rag_tool import initialize_retriever, reload_index
 
 # ============================================================================
@@ -67,6 +69,18 @@ app = FastAPI(
 Instrumentator().instrument(app).expose(app, include_in_schema=False)
 
 # ============================================================================
+# CORS — restreint à l'origine de l'IHM Streamlit (jamais "*" avec credentials)
+# ============================================================================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[config.ALLOWED_ORIGIN],
+    allow_credentials=True,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+
+# ============================================================================
 # AUTHENTIFICATION — Refresh Tokens (verrouille les échanges IHM <-> API)
 # ============================================================================
 
@@ -88,6 +102,7 @@ async def require_auth(
     try:
         return auth.decode_access_token(credentials.credentials)
     except auth.AuthError as e:
+        logger.warning(f"[Auth] Token rejeté sur route protégée : {e}")
         raise HTTPException(status_code=401, detail=str(e), headers={"WWW-Authenticate": "Bearer"})
 
 
@@ -265,12 +280,14 @@ async def root():
     response_model=TokenResponse,
     tags=["Auth"],
     summary="Authentification — émet une paire access/refresh token",
+    dependencies=[Depends(enforce_login_rate_limit)],
 )
 async def login(request: LoginRequest) -> TokenResponse:
     try:
         user = await asyncio.to_thread(auth.authenticate_user, request.username, request.password)
     except auth.AuthError:
         # Message identique, que le compte existe ou non (anti-énumération).
+        logger.warning(f"[Auth] Échec de connexion pour {request.username!r} (/auth/login)")
         raise HTTPException(
             status_code=401,
             detail="Identifiants invalides",
@@ -288,6 +305,7 @@ async def login(request: LoginRequest) -> TokenResponse:
     response_model=TokenResponse,
     tags=["Auth"],
     summary="Login OAuth2 Password Grant (standard — alimente le bouton Authorize de /docs)",
+    dependencies=[Depends(enforce_login_rate_limit)],
 )
 async def token(form_data: OAuth2PasswordRequestForm = Depends()) -> TokenResponse:
     """
@@ -299,6 +317,7 @@ async def token(form_data: OAuth2PasswordRequestForm = Depends()) -> TokenRespon
     try:
         user = await asyncio.to_thread(auth.authenticate_user, form_data.username, form_data.password)
     except auth.AuthError:
+        logger.warning(f"[Auth] Échec de connexion pour {form_data.username!r} (/token)")
         raise HTTPException(
             status_code=401,
             detail="Identifiants invalides",
@@ -321,6 +340,7 @@ async def refresh(request: RefreshRequest) -> TokenResponse:
     try:
         identity = await asyncio.to_thread(auth.validate_and_rotate_refresh_token, request.refresh_token)
     except auth.AuthError as e:
+        logger.warning(f"[Auth] Refresh token invalide/révoqué présenté ({e})")
         raise HTTPException(status_code=401, detail=str(e), headers={"WWW-Authenticate": "Bearer"})
 
     tokens = await asyncio.to_thread(
@@ -455,8 +475,6 @@ async def get_info():
     """
     Informations sur le service.
     """
-    from src import config
-
     return {
         "agent": "HorRAGor BOT",
         "version": "3.0.0",
