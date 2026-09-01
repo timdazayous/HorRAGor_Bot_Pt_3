@@ -443,6 +443,39 @@ class TestAuthEndpoints:
         assert response.status_code == 401
         assert response.headers["www-authenticate"] == "Bearer"
 
+    def test_logout_revokes_the_refresh_token(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            main_module.auth, "revoke_refresh_token",
+            lambda raw_token: captured.setdefault("raw_token", raw_token),
+        )
+
+        response = client.post("/logout", json={"refresh_token": "some-refresh-token"})
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "logged_out"}
+        assert captured["raw_token"] == "some-refresh-token"
+
+    def test_logout_then_refresh_with_same_token_is_rejected(self, monkeypatch):
+        """Bout en bout : après /logout, le refresh token revoqué ne fonctionne plus sur /auth/refresh."""
+        revoked_tokens = set()
+
+        def _revoke(raw_token):
+            revoked_tokens.add(raw_token)
+
+        def _validate_and_rotate(raw_token):
+            if raw_token in revoked_tokens:
+                raise main_module.auth.AuthError("Refresh token déjà révoqué")
+            return {"user_id": 1, "username": "streamlit-ui", "role": "user"}
+
+        monkeypatch.setattr(main_module.auth, "revoke_refresh_token", _revoke)
+        monkeypatch.setattr(main_module.auth, "validate_and_rotate_refresh_token", _validate_and_rotate)
+
+        assert client.post("/logout", json={"refresh_token": "session-token"}).status_code == 200
+
+        response = client.post("/auth/refresh", json={"refresh_token": "session-token"})
+        assert response.status_code == 401
+
     def test_chat_with_valid_token_succeeds(self):
         app.dependency_overrides.pop(require_auth, None)
         token = main_module.auth.create_access_token(user_id=1, username="streamlit-ui")

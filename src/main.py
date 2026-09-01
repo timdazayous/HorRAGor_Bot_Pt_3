@@ -139,6 +139,10 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+class LogoutResponse(BaseModel):
+    status: str = "logged_out"
+
+
 class ChatRequest(BaseModel):
     """
     Requête utilisateur.
@@ -347,6 +351,22 @@ async def refresh(request: RefreshRequest) -> TokenResponse:
         auth.issue_token_pair, identity["user_id"], identity["username"], identity.get("role", "user")
     )
     return TokenResponse(**tokens)
+
+
+@app.post(
+    "/logout",
+    response_model=LogoutResponse,
+    tags=["Auth"],
+    summary="Révoque le refresh token courant (déconnexion)",
+)
+async def logout(request: RefreshRequest) -> LogoutResponse:
+    """
+    Révoque le refresh token présenté — il ne pourra plus servir à obtenir de
+    nouveaux tokens, même s'il n'avait pas encore expiré. Idempotent (ne
+    distingue pas "déjà révoqué" d'"inconnu", cohérent avec l'anti-énumération).
+    """
+    await asyncio.to_thread(auth.revoke_refresh_token, request.refresh_token)
+    return LogoutResponse()
 
 
 @app.get(

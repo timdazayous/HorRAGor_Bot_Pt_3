@@ -150,6 +150,48 @@
         }
       }
     },
+    "/logout": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Révoque le refresh token courant (déconnexion)",
+        "description": "Révoque le refresh token présenté — il ne pourra plus servir à obtenir de\nnouveaux tokens, même s'il n'avait pas encore expiré. Idempotent (ne\ndistingue pas \"déjà révoqué\" d'\"inconnu\", cohérent avec l'anti-énumération).",
+        "operationId": "logout_logout_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogoutResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "tags": [
@@ -565,6 +607,17 @@
           "password"
         ],
         "title": "LoginRequest"
+      },
+      "LogoutResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "logged_out"
+          }
+        },
+        "type": "object",
+        "title": "LogoutResponse"
       },
       "RefreshRequest": {
         "properties": {

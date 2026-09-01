@@ -168,8 +168,25 @@ def validate_and_rotate_refresh_token(raw_token: str) -> dict:
         conn.close()
 
 
+def revoke_refresh_token(raw_token: str) -> None:
+    """
+    Révoque un refresh token précis (logout — endpoint POST /logout).
+    Idempotent : silencieux si le token est déjà révoqué ou inconnu, pour ne
+    donner à l'appelant aucune information exploitable sur l'état réel du
+    token (cohérent avec l'anti-énumération du login).
+    """
+    token_hash = _hash_token(raw_token)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE refresh_tokens SET revoked = TRUE WHERE token_hash = %s", (token_hash,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def revoke_all_tokens_for_user(user_id: int) -> None:
-    """Révoque tous les refresh tokens actifs d'un utilisateur (logout)."""
+    """Révoque toutes les sessions actives (tous les refresh tokens) d'un utilisateur."""
     conn = get_conn()
     try:
         with conn.cursor() as cur:

@@ -282,6 +282,7 @@ uv run python migrations/seed_demo_users.py         # optionnel : comptes demo-u
 | `POST /auth/login` | `{username, password}` (JSON) → `{access_token, refresh_token}` |
 | `POST /token` | `username=...&password=...` (form, OAuth2 Password Grant) → même réponse — alimente le bouton *Authorize* de `/docs` |
 | `POST /auth/refresh` | `{refresh_token}` → nouveau couple de tokens (rotation) |
+| `POST /logout` | `{refresh_token}` → le révoque ; il ne fonctionne plus sur `/auth/refresh` ensuite |
 | `POST /chat` | Exige `Authorization: Bearer <access_token>` — 401 (`WWW-Authenticate: Bearer`) sinon |
 | `POST /admin/reload-index` | Exige en plus `role=admin` — 403 sinon |
 

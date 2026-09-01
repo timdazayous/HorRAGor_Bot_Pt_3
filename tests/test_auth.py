@@ -136,6 +136,25 @@ class TestCreateRefreshToken:
         assert fake_conn.committed is True
 
 
+class TestRevokeRefreshToken:
+    def test_revokes_and_commits(self, monkeypatch):
+        fake_cursor = FakeCursor()
+        fake_conn = FakeConnection(fake_cursor)
+        monkeypatch.setattr(auth, "get_conn", lambda: fake_conn)
+
+        auth.revoke_refresh_token("some-raw-refresh-token")
+
+        assert any("UPDATE refresh_tokens" in q for q, _ in fake_cursor.executed)
+        assert fake_conn.committed is True
+
+    def test_is_idempotent_on_unknown_token(self, monkeypatch):
+        """Pas d'exception si le token est déjà révoqué/inconnu (anti-énumération)."""
+        fake_conn = FakeConnection(FakeCursor())
+        monkeypatch.setattr(auth, "get_conn", lambda: fake_conn)
+
+        auth.revoke_refresh_token("never-issued-token")  # ne lève pas
+
+
 class TestRevokeAllTokensForUser:
     def test_revokes_and_commits(self, monkeypatch):
         fake_cursor = FakeCursor()
