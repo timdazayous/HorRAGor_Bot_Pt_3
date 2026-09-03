@@ -16,6 +16,10 @@ RUN uv sync --frozen --no-install-project --no-dev
 
 # Code de l'API multi-agent (self-contained, ne dépend d'aucun module racine)
 COPY src/ ./src/
+# migrations/ (seed Vault, comptes de service...) dépend déjà de src/ (cf.
+# seed_service_account.py) — réutilisé tel quel par le service one-shot
+# vault-seed du docker-compose, pas d'image dédiée pour si peu.
+COPY migrations/ ./migrations/
 
 EXPOSE 8000
 

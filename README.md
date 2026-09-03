@@ -29,6 +29,7 @@ et résume les deux parties précédentes pour comprendre d'où vient le code.
   - [Lancement](#lancement)
   - [Authentification — Refresh Tokens](#authentification--refresh-tokens)
   - [Monitoring — Langfuse, Prometheus, Grafana, Uptime Kuma](#monitoring--langfuse-prometheus-grafana-uptime-kuma)
+  - [Vault & Traefik (stack locale)](#vault--traefik-stack-locale)
   - [Journalisation (Loguru)](#journalisation-loguru)
   - [Tests & couverture](#tests--couverture)
   - [Documentation technique (Sphinx)](#documentation-technique-sphinx)
@@ -193,6 +194,8 @@ dessinée à la main) est disponible dans la
 | Documentation | **Sphinx** (autodoc + OpenAPI + Mermaid) |
 | CI/CD | GitHub Actions (lint, tests, docs, build & push Docker) |
 | Dépendances | `uv` |
+| Routing (stack locale) | **Traefik** — sous-domaines `*.horragor.localhost`, aucun port direct |
+| Secrets (stack locale) | **HashiCorp Vault** (mode dev) + Vault Agent — rendu des secrets en `env_file` |
 
 ### Installation
 
@@ -238,14 +241,22 @@ streamlit run app_frontend.py
 # → http://localhost:8501
 ```
 
-**Avec Docker (API + stack de monitoring complète)**
+**Avec Docker (API + stack de monitoring complète + Vault + Traefik)**
 
 ```bash
-docker compose up -d
+bash scripts/up.sh
 ```
 
-Lève l'API (`http://localhost:8020`) **et** Langfuse, Prometheus, Grafana,
-Uptime Kuma en une seule commande — voir la section suivante.
+Premier lancement (ou après `docker compose down -v`) : utilise **ce script**,
+pas `docker compose up -d` seul — Vault doit avoir fini de pousser puis de
+rendre les secrets avant que l'API et Langfuse ne démarrent (détails dans
+[Vault & Traefik](#vault--traefik-stack-locale)). Sur un redémarrage simple
+(les secrets déjà rendus sont toujours sur disque), `docker compose up -d`
+seul suffit.
+
+Lève l'API, Langfuse, Prometheus, Grafana, Uptime Kuma, Vault et Traefik.
+Plus aucun service n'expose de port direct : tout se joint par sous-domaine
+via Traefik (`http://api.horragor.localhost`, etc.) — voir la section suivante.
 
 ### Authentification — Refresh Tokens
 
@@ -333,20 +344,21 @@ catalogue de films.
 
 | Service | URL | Rôle |
 |---|---|---|
-| API HorRAGor | http://localhost:8020 | Le graphe multi-agent conteneurisé |
-| Langfuse | http://localhost:3000 | Traçage agent LLM (latence/nœud, tokens, décisions du graphe) |
-| Prometheus | http://localhost:9095 | Métriques brutes (`/metrics` de l'API) |
-| Grafana | http://localhost:3001 | Dashboards (admin / voir `GRAFANA_ADMIN_PASSWORD` dans `.env`) |
-| Uptime Kuma | http://localhost:3002 | Supervision de disponibilité des services |
+| API HorRAGor | http://api.horragor.localhost | Le graphe multi-agent conteneurisé |
+| Langfuse | http://langfuse.horragor.localhost | Traçage agent LLM (latence/nœud, tokens, décisions du graphe) |
+| Prometheus | http://prometheus.horragor.localhost | Métriques brutes (`/metrics` de l'API) |
+| Grafana | http://grafana.horragor.localhost | Dashboards (admin / voir mot de passe — [Vault & Traefik](#vault--traefik-stack-locale)) |
+| Uptime Kuma | http://uptime.horragor.localhost | Supervision de disponibilité des services |
 
-> Port **8020** plutôt que 8000 par défaut, pour éviter tout conflit avec un
-> autre service déjà présent sur la machine hôte.
+> Plus de ports directs (`8020`, `3000`, `3001`, `9095`, `3002`) : tout passe
+> par Traefik, sur ces sous-domaines `*.horragor.localhost` (résolvent vers
+> 127.0.0.1 nativement) — voir [Vault & Traefik](#vault--traefik-stack-locale).
 
-**Premier lancement de Langfuse** — `docker compose up -d` démarre aussi
+**Premier lancement de Langfuse** — `bash scripts/up.sh` démarre aussi
 Postgres/ClickHouse/Redis/Minio nécessaires (auto-hébergé, images officielles
 `langfuse/langfuse:3`). Une fois les conteneurs `healthy` :
 
-1. Rends-toi sur `http://localhost:3000`, crée un compte (local, un faux mail fonctionne).
+1. Rends-toi sur `http://langfuse.horragor.localhost`, crée un compte (local, un faux mail fonctionne).
 2. Crée un nouveau projet pour obtenir tes clés API.
 3. Renseigne-les dans `.env` (`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`).
 4. Relance le service `api` (`docker compose up -d api`).
@@ -357,9 +369,72 @@ toujours instrumenté (`src/metrics.py`) : latence, appels et tokens Groq
 consommés **par agent**, exposés sur `/metrics` et visualisables via le
 dashboard Grafana provisionné automatiquement.
 
+### Vault & Traefik (stack locale)
+
+Ajout pédagogique (cours HashiCorp / routing) sur la stack Docker locale —
+**sans valeur en production tel quel**, voir les encarts "dev-only" ci-dessous.
+
+**Traefik** (reverse proxy) route chaque service sur un sous-domaine plutôt
+que d'exposer des ports directs, via la découverte automatique des conteneurs
+Docker (labels `traefik.*` dans `docker-compose.yml` — aucune config statique
+à maintenir en dehors du fichier compose lui-même) :
+
+| Sous-domaine | Service |
+|---|---|
+| `traefik.horragor.localhost` (ou `:8080`) | Dashboard Traefik — carte en direct des routers/services découverts |
+| `api.horragor.localhost` | API HorRAGor |
+| `langfuse.horragor.localhost` | Langfuse |
+| `grafana.horragor.localhost` | Grafana |
+| `prometheus.horragor.localhost` | Prometheus |
+| `uptime.horragor.localhost` | Uptime Kuma |
+| `vault.horragor.localhost` | UI Vault |
+
+> **Dev-only** : dashboard Traefik sans authentification (`--api.insecure=true`),
+> pas de TLS (HTTP simple sur `:80`). À corriger avant tout déploiement partagé
+> (middleware d'auth sur le dashboard, `entrypoints.websecure` + certificats).
+
+> **Docker Desktop (Windows)** : le montage de `/var/run/docker.sock` (comment
+> Traefik découvre les autres conteneurs) échoue par défaut sur le contexte
+> `desktop-linux` tant que *Settings → Advanced → "Allow the default Docker
+> socket to be used"* n'est pas coché — sinon `docker compose logs traefik`
+> boucle sur `Failed to retrieve information of the docker client and server
+> host`. Voir [Dépannage](#dépannage).
+
+**Vault** (gestion de secrets, mode dev) remplace les secrets en clair de
+`.env`/`docker-compose.yml` pour toute la stack (API + Langfuse + Grafana).
+Séquence de démarrage (voir `scripts/up.sh`) :
+
+```
+vault (sain) → vault-seed (pousse .env dans Vault, one-shot)
+             → vault-agent (rend vault/rendered/secrets.env, one-shot)
+             → api / langfuse-* / grafana (env_file: secrets.env rendu)
+```
+
+`src/config.py` et le code applicatif **n'ont pas changé** : chaque conteneur
+continue de lire de simples variables d'environnement, sans savoir que Vault
+existe — c'est Vault Agent qui les matérialise dans un fichier avant que ces
+conteneurs démarrent (`vault/agent-config.hcl`, `vault/secrets.env.tpl`).
+
+> **Dev-only** : `vault` tourne en `-dev` (stockage en mémoire, perdu à
+> chaque `docker compose down -v`, token racine fixe `VAULT_DEV_ROOT_TOKEN`).
+> Authentification par token statique plutôt que par AppRole, pour rester
+> simple. Explicitement **non persistant, non adapté à un vrai déploiement**.
+
+**Pourquoi deux invocations (`scripts/up.sh`) plutôt qu'un seul
+`docker compose up -d`** — Compose résout le contenu d'un `env_file:` une
+seule fois, au moment où il construit la configuration de *toute*
+l'invocation, pas au moment où chaque conteneur démarre réellement (même
+avec `depends_on: condition: service_completed_successfully`). Si l'API et
+Vault Agent sont lancés dans le même appel, le fichier de secrets rendu
+n'existe pas encore quand Compose prépare la configuration de l'API : elle
+démarrerait avec des secrets vides. Deux invocations séparées évitent le
+problème.
+
 > Secrets serveur (`LANGFUSE_SALT`, `NEXTAUTH_SECRET`, `CLICKHOUSE_PASSWORD`,
 > `GRAFANA_ADMIN_PASSWORD`...) : valeurs par défaut dans `.env.example`, **à
-> remplacer** (voir `openssl rand -hex 32`) avant tout déploiement partagé.
+> remplacer** (voir `openssl rand -hex 32`) avant tout déploiement partagé —
+> elles ne servent plus qu'à amorcer Vault (`vault_seed.py`), pas à être lues
+> directement par les conteneurs.
 
 ### Journalisation (Loguru)
 
@@ -423,9 +498,10 @@ réelle du `StateGraph` compilé — jamais obsolète).
 
 ### Endpoints API
 
-> Les exemples ci-dessous utilisent `:8000` (lancement `uvicorn` direct, sans
-> Docker). En passant par `docker compose up -d`, remplace par `:8020` (voir
-> section Monitoring).
+> Les exemples ci-dessous utilisent `http://localhost:8000` (lancement
+> `uvicorn` direct, sans Docker). Avec la stack Docker (`bash scripts/up.sh`),
+> remplace par `http://api.horragor.localhost` (voir [Vault & Traefik](#vault--traefik-stack-locale)) —
+> il n'y a plus de port direct.
 
 ```bash
 # Santé (public, pas d'authentification)
@@ -502,14 +578,16 @@ HorRAGor_Bot_Pt_3/
 │       ├── router.py                  # Aiguillage conditionnel
 │       └── pipeline.py                # Assemblage et compilation du StateGraph
 ├── docs/                              # Documentation Sphinx (source + scripts de génération)
-├── migrations/                        # Tables auth (users + role, refresh_tokens) + seed comptes
+├── migrations/                        # Tables auth (users + role, refresh_tokens) + seed comptes + vault_seed.py
 ├── monitoring/                        # Config Prometheus + provisioning Grafana
+├── vault/                             # agent-config.hcl + secrets.env.tpl (Vault Agent) — rendered/ généré, gitignored
+├── scripts/up.sh                      # Démarrage 2 phases (Vault -> reste de la stack)
 ├── tests/                             # Tests unitaires Partie 3 + sécurité
 ├── test_api.py                        # Tests de contrat API (auth, admin, durcissement inclus)
 ├── test_e2e.py                        # Scénario de bout en bout — couche sécurité, autonome
 ├── .github/workflows/ci.yml           # Pipeline CI/CD
-├── docker-compose.yml                 # API + Langfuse + Prometheus + Grafana + Uptime Kuma
-├── Dockerfile.api                     # Image de l'API multi-agent
+├── docker-compose.yml                 # API + Vault + Traefik + Langfuse + Prometheus + Grafana + Uptime Kuma
+├── Dockerfile.api                     # Image de l'API multi-agent (réutilisée par le service vault-seed)
 │
 ├── app/                                # Pipeline d'ingestion (Partie 1 — Data)
 ├── tools/                              # Tools legacy Partie 2 (query_movie_metadata, etc.)
@@ -536,6 +614,9 @@ HorRAGor_Bot_Pt_3/
 | Grafana boucle au démarrage | Volume `grafana_data` corrompu par un changement de config datasource — `docker compose rm -f grafana && docker volume rm horragor_bot_pt_3_grafana_data` puis relance |
 | `/auth/login` répond 500 ("Network is unreachable") depuis Docker | `SUPABASE_DB_URL` pointe sur la connexion directe (IPv6 seule) — utilise l'URL du connection pooler (voir section Configuration) |
 | `/chat` répond 401 alors que tu as un token | Le token a expiré (30 min par défaut) — l'IHM se rafraîchit automatiquement ; en curl, relance `/auth/login` |
+| `api`/`langfuse-*`/`grafana` démarrent avec des secrets vides ou plantent au démarrage | Lancé avec `docker compose up -d` seul au lieu de `bash scripts/up.sh` sur un premier démarrage — voir [Vault & Traefik](#vault--traefik-stack-locale) |
+| `http://api.horragor.localhost` (ou autre sous-domaine) ne répond pas, dashboard Traefik vide (`api/overview` ne liste que `api@internal`/`dashboard@internal`) | `docker compose logs traefik` — si tu vois en boucle `Failed to retrieve information of the docker client and server host`, Traefik n'arrive pas à joindre `/var/run/docker.sock` monté depuis le conteneur. **Vérifié sur Docker Desktop (Windows, contexte `desktop-linux`, pipe nommé)** : il faut activer *Settings → Advanced → "Allow the default Docker socket to be used"* (le libellé exact varie selon la version) pour que Docker Desktop expose ce socket compatible aux conteneurs Linux — sans ça, le montage échoue silencieusement pour tous les conteneurs, pas seulement Traefik. Le reste de la stack (Vault, API, Langfuse...) fonctionne normalement, seul le routing Traefik est affecté. |
+| `vault-seed` ou `vault-agent` échoue | `docker compose logs vault-seed` / `vault-agent` — le plus souvent `vault` pas encore `healthy` (relance) ou `VAULT_TOKEN`/`VAULT_DEV_ROOT_TOKEN` incohérent entre les deux services |
 
 ---
 

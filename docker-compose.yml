@@ -16,6 +16,104 @@ services:
       - SPARK_LOCAL_IP=127.0.0.1
     command: python app/services/spark_service.py
 
+  # =========================================================================
+  # Traefik — reverse proxy / routing. Découvre les conteneurs via le socket
+  # Docker (labels ci-dessous) et route chaque service sur un sous-domaine
+  # *.horragor.localhost (résout vers 127.0.0.1 nativement, rien à ajouter
+  # dans /etc/hosts). Aucun mapping de port direct n'est gardé sur les
+  # services proxifiés : tout passe par Traefik, pour de vrai.
+  #
+  # Local uniquement : dashboard sans authentification (--api.insecure=true),
+  # pas de TLS (entrypoint HTTP simple). À ne jamais reproduire tel quel en
+  # dehors d'un poste de développement.
+  # =========================================================================
+
+  traefik:
+    image: traefik:v3.2
+    container_name: horragor-traefik
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --api.dashboard=true
+      - --api.insecure=true
+    ports:
+      - "80:80"
+      - "8080:8080" # dashboard — http://traefik.horragor.localhost ou localhost:8080
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.dashboard.rule=Host(`traefik.horragor.localhost`)
+      - traefik.http.routers.dashboard.service=api@internal
+
+  # =========================================================================
+  # Vault — gestion de secrets (mode dev : stockage en mémoire, non
+  # persistant, token racine fixe). Uniquement pour apprendre/manipuler
+  # localement — jamais pour un déploiement partagé tel quel.
+  #
+  # Séquence : vault (sain) -> vault-seed (pousse les valeurs de .env dans
+  # Vault) -> vault-agent (rend ces secrets en fichier .env consommé par les
+  # autres conteneurs via env_file). Les conteneurs applicatifs ne parlent
+  # jamais directement à Vault : ils lisent juste des variables d'env
+  # normales, comme avant.
+  # =========================================================================
+
+  vault:
+    image: hashicorp/vault:1.18
+    container_name: horragor-vault
+    restart: unless-stopped
+    cap_add:
+      - IPC_LOCK
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN:-horragor-dev-root-token} # CHANGEME (dev only)
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    healthcheck:
+      test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 2s
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.vault.rule=Host(`vault.horragor.localhost`)
+      - traefik.http.services.vault.loadbalancer.server.port=8200
+
+  vault-seed:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: horragor-vault-seed
+    restart: "no"
+    depends_on:
+      vault:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-horragor-dev-root-token}
+    entrypoint: ["uv", "run", "--no-dev", "python", "migrations/vault_seed.py"]
+
+  vault-agent:
+    image: hashicorp/vault:1.18
+    container_name: horragor-vault-agent
+    restart: "no"
+    depends_on:
+      vault-seed:
+        condition: service_completed_successfully
+    environment:
+      VAULT_ADDR: http://vault:8200
+    volumes:
+      - ./vault/agent-config.hcl:/vault/config/agent.hcl:ro
+      - ./vault/secrets.env.tpl:/vault/config/secrets.env.tpl:ro
+      - ./vault/rendered:/vault/rendered
+    entrypoint: sh
+    command:
+      - -c
+      - "echo ${VAULT_DEV_ROOT_TOKEN:-horragor-dev-root-token} > /vault/rendered/.token && vault agent -config=/vault/config/agent.hcl"
+
   # -----------------------------------------------------------------------
   # API FastAPI — graphe multi-agent LangGraph (Partie 3)
   # -----------------------------------------------------------------------
@@ -25,17 +123,24 @@ services:
       dockerfile: Dockerfile.api
     container_name: horragor-api
     restart: unless-stopped
-    ports:
-      - "8020:8000"
     volumes:
       - ./data/faiss_index:/app/data/faiss_index:ro
       - ./logs:/app/logs
     env_file:
       - .env
+      - path: ./vault/rendered/secrets.env
+        required: false # absent au tout premier `up`, avant que vault-agent ne l'ait rendu
     environment:
       LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
     depends_on:
-      - langfuse-web
+      langfuse-web:
+        condition: service_started
+      vault-agent:
+        condition: service_completed_successfully
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.api.rule=Host(`api.horragor.localhost`)
+      - traefik.http.services.api.loadbalancer.server.port=8000
 
   # =========================================================================
   # Monitoring — Langfuse (traçage agent LLM)
@@ -44,64 +149,79 @@ services:
   langfuse-worker:
     image: docker.io/langfuse/langfuse-worker:3
     restart: always
-    depends_on: &langfuse-depends-on
-      langfuse-postgres:
-        condition: service_healthy
-      langfuse-minio:
-        condition: service_healthy
-      langfuse-redis:
-        condition: service_healthy
-      langfuse-clickhouse:
-        condition: service_healthy
-    ports:
-      - "127.0.0.1:3030:3030"
+    depends_on:
+      <<: &langfuse-depends-on
+        langfuse-postgres:
+          condition: service_healthy
+        langfuse-minio:
+          condition: service_healthy
+        langfuse-redis:
+          condition: service_healthy
+        langfuse-clickhouse:
+          condition: service_healthy
+      vault-agent:
+        condition: service_completed_successfully
+    env_file:
+      - path: ./vault/rendered/secrets.env
+        required: false # absent au tout premier `up`, avant que vault-agent ne l'ait rendu
     environment: &langfuse-worker-env
       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
       DATABASE_URL: ${LANGFUSE_DATABASE_URL:-postgresql://postgres:postgres@langfuse-postgres:5432/postgres} # CHANGEME
-      SALT: ${LANGFUSE_SALT:-mysalt} # CHANGEME
-      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000} # CHANGEME: openssl rand -hex 32
       TELEMETRY_ENABLED: ${TELEMETRY_ENABLED:-true}
       CLICKHOUSE_MIGRATION_URL: ${CLICKHOUSE_MIGRATION_URL:-clickhouse://langfuse-clickhouse:9000}
       CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://langfuse-clickhouse:8123}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse} # CHANGEME
       CLICKHOUSE_CLUSTER_ENABLED: ${CLICKHOUSE_CLUSTER_ENABLED:-false}
       LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${LANGFUSE_S3_EVENT_UPLOAD_BUCKET:-langfuse}
       LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
       LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minio}
-      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-miniosecret} # CHANGEME
       LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
       LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
       LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
       LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: ${LANGFUSE_S3_EVENT_UPLOAD_BUCKET:-langfuse}
       LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
       LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minio}
-      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-miniosecret} # CHANGEME
       LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:9090
       LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
       LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
       REDIS_HOST: ${REDIS_HOST:-langfuse-redis}
       REDIS_PORT: "6379"
-      REDIS_AUTH: ${REDIS_AUTH:-myredissecret} # CHANGEME
+      # SALT, ENCRYPTION_KEY, REDIS_AUTH, LANGFUSE_S3_*_SECRET_ACCESS_KEY :
+      # servis par Vault via env_file ci-dessus (vault/secrets.env.tpl), plus
+      # de valeur par défaut en clair ici.
 
   langfuse-web:
     image: docker.io/langfuse/langfuse:3
     restart: always
-    depends_on: *langfuse-depends-on
-    ports:
-      - "3000:3000"
+    depends_on:
+      <<: *langfuse-depends-on
+      vault-agent:
+        condition: service_completed_successfully
+    env_file:
+      - path: ./vault/rendered/secrets.env
+        required: false # absent au tout premier `up`, avant que vault-agent ne l'ait rendu
     environment:
       <<: *langfuse-worker-env
-      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-mysecret} # CHANGEME
+      # NEXTAUTH_SECRET : servi par Vault via env_file (voir langfuse-worker).
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.langfuse.rule=Host(`langfuse.horragor.localhost`)
+      - traefik.http.services.langfuse.loadbalancer.server.port=3000
 
   langfuse-clickhouse:
     image: docker.io/clickhouse/clickhouse-server
     restart: always
     user: "101:101"
+    depends_on:
+      vault-agent:
+        condition: service_completed_successfully
+    env_file:
+      - path: ./vault/rendered/secrets.env
+        required: false # absent au tout premier `up`, avant que vault-agent ne l'ait rendu
     environment:
       CLICKHOUSE_DB: default
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse} # CHANGEME
+      # CLICKHOUSE_PASSWORD : servi par Vault via env_file.
     volumes:
       - langfuse_clickhouse_data:/var/lib/clickhouse
       - langfuse_clickhouse_logs:/var/log/clickhouse-server
@@ -118,11 +238,17 @@ services:
   langfuse-minio:
     image: cgr.dev/chainguard/minio
     restart: always
+    depends_on:
+      vault-agent:
+        condition: service_completed_successfully
     entrypoint: sh
     command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    env_file:
+      - path: ./vault/rendered/secrets.env
+        required: false # absent au tout premier `up`, avant que vault-agent ne l'ait rendu
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-miniosecret} # CHANGEME
+      # MINIO_ROOT_PASSWORD : servi par Vault via env_file.
     ports:
       - "9090:9000"
       - "127.0.0.1:9091:9001"
@@ -138,9 +264,18 @@ services:
   langfuse-redis:
     image: docker.io/redis:7
     restart: always
-    command: >
-      --requirepass ${REDIS_AUTH:-myredissecret}
-      --maxmemory-policy noeviction
+    depends_on:
+      vault-agent:
+        condition: service_completed_successfully
+    env_file:
+      - path: ./vault/rendered/secrets.env
+        required: false # absent au tout premier `up`, avant que vault-agent ne l'ait rendu
+    # REDIS_AUTH vient de Vault (env_file) : --requirepass ne peut lire qu'un
+    # argument de commande, pas une variable d'env directement, donc on passe
+    # par un shell qui l'étend au démarrage ($$ échappe le $ pour Compose,
+    # qui sinon tenterait de l'interpoler lui-même depuis .env).
+    entrypoint: sh
+    command: -c 'redis-server --requirepass "$$REDIS_AUTH" --maxmemory-policy noeviction'
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
@@ -161,7 +296,7 @@ services:
       retries: 10
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres # CHANGEME
+      POSTGRES_PASSWORD: postgres # CHANGEME — hors périmètre Vault (v1) : Postgres interne à Langfuse
       POSTGRES_DB: postgres
       TZ: UTC
       PGTZ: UTC
@@ -181,25 +316,35 @@ services:
     volumes:
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
-    ports:
-      - "9095:9090"
     depends_on:
       - api
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.prometheus.rule=Host(`prometheus.horragor.localhost`)
+      - traefik.http.services.prometheus.loadbalancer.server.port=9090
 
   grafana:
     image: grafana/grafana:latest
     container_name: horragor-grafana
     restart: unless-stopped
+    depends_on:
+      prometheus:
+        condition: service_started
+      vault-agent:
+        condition: service_completed_successfully
+    env_file:
+      - path: ./vault/rendered/secrets.env
+        required: false # absent au tout premier `up`, avant que vault-agent ne l'ait rendu
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin} # CHANGEME
+      # GF_SECURITY_ADMIN_PASSWORD : servi par Vault via env_file.
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana
-    ports:
-      - "3001:3000"
-    depends_on:
-      - prometheus
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.grafana.rule=Host(`grafana.horragor.localhost`)
+      - traefik.http.services.grafana.loadbalancer.server.port=3000
 
   uptime-kuma:
     image: louislam/uptime-kuma:1
@@ -207,8 +352,10 @@ services:
     restart: unless-stopped
     volumes:
       - uptime_kuma_data:/app/data
-    ports:
-      - "3002:3001"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.uptime.rule=Host(`uptime.horragor.localhost`)
+      - traefik.http.services.uptime.loadbalancer.server.port=3001
 
 volumes:
   langfuse_postgres_data:

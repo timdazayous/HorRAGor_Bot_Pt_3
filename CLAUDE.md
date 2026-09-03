@@ -24,8 +24,9 @@ uv sync                                          # install dependencies
 uvicorn src.main:app --reload                    # API on :8000, Swagger at /docs
 streamlit run app_frontend.py                    # UI on :8501
 
-# Full stack with monitoring
-docker compose up -d                             # API (:8020) + Langfuse + Prometheus + Grafana + Uptime Kuma
+# Full stack with monitoring + Vault + Traefik (fresh start / after `docker compose down -v`)
+bash scripts/up.sh                               # API + Langfuse + Prometheus + Grafana + Uptime Kuma, routed via *.horragor.localhost
+docker compose up -d                             # subsequent restarts only — needs vault/rendered/secrets.env already on disk
 
 # Tests
 uv run pytest                                    # full suite, coverage gate at 80% (currently ~93%)
@@ -85,6 +86,18 @@ START → rag ──(complet)────────────→ narration �
 ### State/DB layout
 
 Supabase (Postgres) hosts both the Partie 1 movie data (`film`, `genre`, `film_genre`, `evaluation`, `analyse_spark`, `source` — see `Merise.md`) and the Partie 3 auth tables (`users`, `refresh_tokens` — see `migrations/`). Same database, two unrelated concerns sharing infrastructure.
+
+### Local Docker stack — Vault + Traefik (learning exercise, not production)
+
+`docker-compose.yml` also runs HashiCorp Vault (dev mode) and Traefik, added purely to learn the tools (course-driven, not a project requirement) — see the "Vault & Traefik" section of README.md for the full picture. Key points if you touch this:
+
+- **Application code (`src/`) does not know Vault exists.** Vault Agent (`vault-agent` service, one-shot, `exit_after_auth = true`) renders `vault/secrets.env.tpl` into `vault/rendered/secrets.env` (gitignored), and every secret-consuming service (`api`, `langfuse-*`, `grafana`) reads it via a plain `env_file:` entry — same as any other env var. `src/config.py`'s fail-closed checks are unmodified and still the only real guard.
+- **Startup is two Compose invocations, not one** (`scripts/up.sh`): Compose resolves `env_file:` content once, when it builds the config for *all* services in a single `up` call — not lazily per-container respecting `depends_on`. Verified empirically (a fresh `docker compose up` run shows a `depends_on: condition: service_completed_successfully`-gated consumer still getting an empty env var from a file its dependency wrote moments earlier in the *same* invocation). So `scripts/up.sh` runs `docker compose up vault-agent` (blocks until Vault → seed → render completes) *then* `docker compose up -d` (now the file already exists on disk before this second invocation parses configs). A plain `docker compose up -d` only works once `vault/rendered/secrets.env` already exists from a prior run.
+- Real Vault secret paths (`secret/horragor/api`, `secret/horragor/langfuse`, `secret/horragor/monitoring`) are seeded by `migrations/vault_seed.py` (one-shot `vault-seed` service, reuses `Dockerfile.api`'s image — that Dockerfile now also `COPY migrations/`) from the plaintext values still sitting in `.env` — `.env` is the bootstrap source, Vault becomes canonical after that.
+- The Vault Agent template's output variable names (`SALT`, `GF_SECURITY_ADMIN_PASSWORD`, `LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY`, ...) intentionally match each third-party image's *actual* expected env var name, not a "friendly" name — check `docker-compose.yml`'s original `${VAR:-default}` substitutions before renaming anything in `vault/secrets.env.tpl`.
+- `langfuse-redis`'s password can't come from `env_file` the normal way — Redis needs it as a `--requirepass` CLI arg, so the service uses `entrypoint: sh` + `command: -c 'redis-server --requirepass "$$REDIS_AUTH" ...'` (the `$$` escapes Compose's own interpolation so the container's shell expands it from its real env at runtime, not Compose at parse time).
+- All of `traefik`/`vault`/`vault-seed`/`vault-agent` and every proxied service's Traefik `labels:` are dev-only shortcuts (`--api.insecure=true` dashboard, HTTP-only entrypoint, Vault `-dev` in-memory storage with a fixed root token) — flagged as such in the README, don't carry these patterns into anything resembling production without hardening them first.
+- **Verified end-to-end on this machine (Docker Desktop, Windows)**: the Vault chain (vault → vault-seed → vault-agent → all secret-consuming containers, including the `$$REDIS_AUTH` escaping) works exactly as designed — confirmed by actually running `docker compose up vault-agent` then `docker compose up -d` and inspecting the rendered `secrets.env`, container logs, and a `redis-cli` auth check. Traefik's routing could *not* be verified the same way here: its Docker-socket provider failed with `Failed to retrieve information of the docker client and server host` because this Docker Desktop's active context (`desktop-linux`) uses a Windows named pipe, not a `/var/run/docker.sock` — reproduced independently with a minimal bare Traefik + socket-mount compose file, so it's an environment/Docker Desktop setting (Settings → Advanced → "Allow the default Docker socket to be used"), not a bug in `docker-compose.yml`'s labels/rules. If Traefik routing still 404s after that setting is enabled, re-check `docker-compose.yml`'s labels before assuming the config is wrong.
 
 ### Observability
 
