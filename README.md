@@ -29,7 +29,7 @@ et résume les deux parties précédentes pour comprendre d'où vient le code.
   - [Lancement](#lancement)
   - [Authentification — Refresh Tokens](#authentification--refresh-tokens)
   - [Monitoring — Langfuse, Prometheus, Grafana, Uptime Kuma](#monitoring--langfuse-prometheus-grafana-uptime-kuma)
-  - [Vault & Traefik (stack locale)](#vault--traefik-stack-locale)
+  - [Vault & Caddy (stack locale)](#vault--caddy-stack-locale)
   - [Journalisation (Loguru)](#journalisation-loguru)
   - [Tests & couverture](#tests--couverture)
   - [Documentation technique (Sphinx)](#documentation-technique-sphinx)
@@ -194,7 +194,7 @@ dessinée à la main) est disponible dans la
 | Documentation | **Sphinx** (autodoc + OpenAPI + Mermaid) |
 | CI/CD | GitHub Actions (lint, tests, docs, build & push Docker) |
 | Dépendances | `uv` |
-| Routing (stack locale) | **Traefik** — sous-domaines `*.horragor.localhost`, aucun port direct |
+| Routing (stack locale) | **Caddy** (`caddy-docker-proxy`) — sous-domaines `*.horragor.localhost`, aucun port direct |
 | Secrets (stack locale) | **HashiCorp Vault** (mode dev) + Vault Agent — rendu des secrets en `env_file` |
 
 ### Installation
@@ -241,7 +241,7 @@ streamlit run app_frontend.py
 # → http://localhost:8501
 ```
 
-**Avec Docker (API + stack de monitoring complète + Vault + Traefik)**
+**Avec Docker (API + stack de monitoring complète + Vault + Caddy)**
 
 ```bash
 bash scripts/up.sh
@@ -250,13 +250,13 @@ bash scripts/up.sh
 Premier lancement (ou après `docker compose down -v`) : utilise **ce script**,
 pas `docker compose up -d` seul — Vault doit avoir fini de pousser puis de
 rendre les secrets avant que l'API et Langfuse ne démarrent (détails dans
-[Vault & Traefik](#vault--traefik-stack-locale)). Sur un redémarrage simple
+[Vault & Caddy](#vault--caddy-stack-locale)). Sur un redémarrage simple
 (les secrets déjà rendus sont toujours sur disque), `docker compose up -d`
 seul suffit.
 
-Lève l'API, Langfuse, Prometheus, Grafana, Uptime Kuma, Vault et Traefik.
+Lève l'API, Langfuse, Prometheus, Grafana, Uptime Kuma, Vault et Caddy.
 Plus aucun service n'expose de port direct : tout se joint par sous-domaine
-via Traefik (`http://api.horragor.localhost`, etc.) — voir la section suivante.
+via Caddy (`http://api.horragor.localhost`, etc.) — voir la section suivante.
 
 ### Authentification — Refresh Tokens
 
@@ -347,12 +347,12 @@ catalogue de films.
 | API HorRAGor | http://api.horragor.localhost | Le graphe multi-agent conteneurisé |
 | Langfuse | http://langfuse.horragor.localhost | Traçage agent LLM (latence/nœud, tokens, décisions du graphe) |
 | Prometheus | http://prometheus.horragor.localhost | Métriques brutes (`/metrics` de l'API) |
-| Grafana | http://grafana.horragor.localhost | Dashboards (admin / voir mot de passe — [Vault & Traefik](#vault--traefik-stack-locale)) |
+| Grafana | http://grafana.horragor.localhost | Dashboards (admin / voir mot de passe — [Vault & Caddy](#vault--caddy-stack-locale)) |
 | Uptime Kuma | http://uptime.horragor.localhost | Supervision de disponibilité des services |
 
 > Plus de ports directs (`8020`, `3000`, `3001`, `9095`, `3002`) : tout passe
-> par Traefik, sur ces sous-domaines `*.horragor.localhost` (résolvent vers
-> 127.0.0.1 nativement) — voir [Vault & Traefik](#vault--traefik-stack-locale).
+> par Caddy, sur ces sous-domaines `*.horragor.localhost` (résolvent vers
+> 127.0.0.1 nativement) — voir [Vault & Caddy](#vault--caddy-stack-locale).
 
 **Premier lancement de Langfuse** — `bash scripts/up.sh` démarre aussi
 Postgres/ClickHouse/Redis/Minio nécessaires (auto-hébergé, images officielles
@@ -369,19 +369,47 @@ toujours instrumenté (`src/metrics.py`) : latence, appels et tokens Groq
 consommés **par agent**, exposés sur `/metrics` et visualisables via le
 dashboard Grafana provisionné automatiquement.
 
-### Vault & Traefik (stack locale)
+### Vault & Caddy (stack locale)
 
 Ajout pédagogique (cours HashiCorp / routing) sur la stack Docker locale —
 **sans valeur en production tel quel**, voir les encarts "dev-only" ci-dessous.
 
-**Traefik** (reverse proxy) route chaque service sur un sous-domaine plutôt
-que d'exposer des ports directs, via la découverte automatique des conteneurs
-Docker (labels `traefik.*` dans `docker-compose.yml` — aucune config statique
-à maintenir en dehors du fichier compose lui-même) :
+#### Pourquoi Caddy plutôt que Traefik
+
+Le choix initial était Traefik (le plus connu, celui vu en cours). En le
+testant en conditions réelles sur cette machine (Docker Desktop 4.89,
+Windows), son provider Docker échouait de façon reproductible :
+
+1. La VM interne de Docker Desktop n'expose plus le chemin classique
+   `/var/run/docker.sock` — le vrai socket vit ailleurs
+   (`/run/guest-services/docker.proxy.sock` sur cette version).
+2. Une fois pointé sur le bon chemin, Traefik parlait bien à un vrai moteur
+   Docker — mais son client interne envoyait systématiquement
+   `GET /v1.24/version` (une version d'API très ancienne) et se faisait
+   rejeter par le moteur (minimum requis : `1.40`), alors qu'un `curl
+   --unix-socket` direct sur le même socket répondait correctement en
+   `1.55`. Reproduit à l'identique avec Traefik v3.2 **et** v3.5 (dernière
+   version à l'époque du test), avec un montage direct du socket et avec un
+   proxy `tecnativa/docker-socket-proxy` dédié, `DOCKER_API_VERSION` sans
+   effet (le provider Docker de Traefik ne le lit pas).
+
+Root-cause confirmée : un bug/incompatibilité côté client Docker embarqué
+dans Traefik face à cette chaîne de sockets Docker Desktop — pas une erreur
+de configuration côté `docker-compose.yml`. Avant de conclure à un
+problème insoluble, **Caddy** (via le plugin
+[`caddy-docker-proxy`](https://github.com/lucaslorentz/caddy-docker-proxy),
+qui route par labels Docker au même titre que Traefik) a été testé en
+isolation sur le même socket : connexion immédiate, sans négociation de
+version foireuse, routing HTTP fonctionnel de bout en bout — vérifié avant
+de remplacer Traefik dans le projet.
+
+**Caddy** route donc chaque service sur un sous-domaine plutôt que d'exposer
+des ports directs, via la découverte automatique des conteneurs Docker
+(labels `caddy`/`caddy.reverse_proxy` dans `docker-compose.yml` — aucune
+config statique à maintenir en dehors du fichier compose lui-même) :
 
 | Sous-domaine | Service |
 |---|---|
-| `traefik.horragor.localhost` (ou `:8080`) | Dashboard Traefik — carte en direct des routers/services découverts |
 | `api.horragor.localhost` | API HorRAGor |
 | `langfuse.horragor.localhost` | Langfuse |
 | `grafana.horragor.localhost` | Grafana |
@@ -389,16 +417,22 @@ Docker (labels `traefik.*` dans `docker-compose.yml` — aucune config statique
 | `uptime.horragor.localhost` | Uptime Kuma |
 | `vault.horragor.localhost` | UI Vault |
 
-> **Dev-only** : dashboard Traefik sans authentification (`--api.insecure=true`),
-> pas de TLS (HTTP simple sur `:80`). À corriger avant tout déploiement partagé
-> (middleware d'auth sur le dashboard, `entrypoints.websecure` + certificats).
+Pas de dashboard graphique comme Traefik, mais `GET http://localhost:2019/config/`
+retourne en direct la configuration JSON générée par Caddy à partir des labels.
 
-> **Docker Desktop (Windows)** : le montage de `/var/run/docker.sock` (comment
-> Traefik découvre les autres conteneurs) peut échouer selon l'installation —
-> `docker compose logs traefik` boucle alors sur `Failed to retrieve
-> information of the docker client and server host`. Cause identifiée sur
-> Docker Desktop 4.89 : sa VM interne n'expose plus ce chemin classique.
-> Détail et piste de résolution dans [Dépannage](#dépannage).
+> **Dev-only** : chaque label est préfixé `http://` pour désactiver le HTTPS
+> automatique de Caddy (sinon redirection systématique vers un certificat
+> local auto-signé — inutile pour un simple usage HTTP local). Pas de TLS,
+> pas d'authentification sur le port admin `2019`. À corriger avant tout
+> déploiement partagé.
+
+> **Docker Desktop (Windows)** : si `docker compose logs caddy` affiche
+> `Docker ping failed` / `no such file or directory` sur `/var/run/docker.sock`,
+> c'est le même souci de chemin que celui rencontré avec Traefik (point 1
+> ci-dessus) — la solution est un fichier local
+> `docker-compose.override.yml` (jamais commité, voir `.gitignore`) qui
+> remonte le vrai chemin trouvé sur ta machine. Détail dans
+> [Dépannage](#dépannage).
 
 **Vault** (gestion de secrets, mode dev) remplace les secrets en clair de
 `.env`/`docker-compose.yml` pour toute la stack (API + Langfuse + Grafana).
@@ -500,7 +534,7 @@ réelle du `StateGraph` compilé — jamais obsolète).
 
 > Les exemples ci-dessous utilisent `http://localhost:8000` (lancement
 > `uvicorn` direct, sans Docker). Avec la stack Docker (`bash scripts/up.sh`),
-> remplace par `http://api.horragor.localhost` (voir [Vault & Traefik](#vault--traefik-stack-locale)) —
+> remplace par `http://api.horragor.localhost` (voir [Vault & Caddy](#vault--caddy-stack-locale)) —
 > il n'y a plus de port direct.
 
 ```bash
@@ -586,7 +620,7 @@ HorRAGor_Bot_Pt_3/
 ├── test_api.py                        # Tests de contrat API (auth, admin, durcissement inclus)
 ├── test_e2e.py                        # Scénario de bout en bout — couche sécurité, autonome
 ├── .github/workflows/ci.yml           # Pipeline CI/CD
-├── docker-compose.yml                 # API + Vault + Traefik + Langfuse + Prometheus + Grafana + Uptime Kuma
+├── docker-compose.yml                 # API + Vault + Caddy + Langfuse + Prometheus + Grafana + Uptime Kuma
 ├── Dockerfile.api                     # Image de l'API multi-agent (réutilisée par le service vault-seed)
 │
 ├── app/                                # Pipeline d'ingestion (Partie 1 — Data)
@@ -614,8 +648,8 @@ HorRAGor_Bot_Pt_3/
 | Grafana boucle au démarrage | Volume `grafana_data` corrompu par un changement de config datasource — `docker compose rm -f grafana && docker volume rm horragor_bot_pt_3_grafana_data` puis relance |
 | `/auth/login` répond 500 ("Network is unreachable") depuis Docker | `SUPABASE_DB_URL` pointe sur la connexion directe (IPv6 seule) — utilise l'URL du connection pooler (voir section Configuration) |
 | `/chat` répond 401 alors que tu as un token | Le token a expiré (30 min par défaut) — l'IHM se rafraîchit automatiquement ; en curl, relance `/auth/login` |
-| `api`/`langfuse-*`/`grafana` démarrent avec des secrets vides ou plantent au démarrage | Lancé avec `docker compose up -d` seul au lieu de `bash scripts/up.sh` sur un premier démarrage — voir [Vault & Traefik](#vault--traefik-stack-locale) |
-| `http://api.horragor.localhost` (ou autre sous-domaine) ne répond pas, `docker compose logs traefik` boucle sur `Failed to retrieve information of the docker client and server host` | **Root-cause confirmée sur Docker Desktop 4.89 (Windows, WSL2)**, pas un défaut de `docker-compose.yml`. La VM interne (`docker-desktop`) n'a plus de fichier à `/var/run/docker.sock` : le vrai socket vit à `/run/guest-services/docker.proxy.sock`. Le monter directement (ou via un proxy `tecnativa/docker-socket-proxy` dédié) fait bien parler Traefik à un vrai moteur Docker — mais son client Docker interne envoie alors `GET /v1.24/version` et le moteur (min. `1.40`) le rejette (`400`), reproduit à l'identique avec Traefik v3.2 et v3.5, `DOCKER_API_VERSION` sans effet (le provider Docker de Traefik ne le lit pas). Un `curl --unix-socket ... /_ping` direct répond pourtant correctement `Api-Version: 1.55` — la négociation de version échoue donc spécifiquement dans le client Go embarqué de Traefik face à cette chaîne de sockets Docker Desktop, pas dans le protocole HTTP lui-même. **Non résolu sur cette machine** ; `docker-compose.yml` reste correct et fonctionnera tel quel sur Linux/Mac/CI (Docker Engine standard, pas de VM/proxy interne). Contournement possible si besoin : un reverse-proxy alternatif basé sur les labels Docker (ex. Caddy) pourrait ne pas avoir ce problème de négociation, non testé ici. Le reste de la stack (Vault, API, Langfuse...) fonctionne normalement, seul le routing Traefik est affecté. |
+| `api`/`langfuse-*`/`grafana` démarrent avec des secrets vides ou plantent au démarrage | Lancé avec `docker compose up -d` seul au lieu de `bash scripts/up.sh` sur un premier démarrage — voir [Vault & Caddy](#vault--caddy-stack-locale) |
+| `http://api.horragor.localhost` (ou autre sous-domaine) ne répond pas, `docker compose logs caddy` affiche `Docker ping failed` / `dial unix /var/run/docker.sock: connect: no such file or directory` | Le chemin `/var/run/docker.sock` monté par défaut dans `docker-compose.yml` (le standard, correct sur Linux/Mac/CI) n'existe pas dans la VM interne de **cette version de Docker Desktop (confirmé sur 4.89, Windows)** — le vrai socket vit ailleurs (trouvé sur cette machine : `/run/guest-services/docker.proxy.sock`, à vérifier sur la tienne via `wsl -d docker-desktop -e sh -c "find / -xdev -name 'docker*.sock' 2>/dev/null"`). Corrige **localement**, sans toucher au fichier versionné, avec un `docker-compose.override.yml` (déjà dans `.gitignore` — jamais à partager, le chemin est spécifique à ta machine) :<br><br>`services:`<br>`  caddy:`<br>`    volumes: !override ["/run/guest-services/docker.proxy.sock:/var/run/docker.sock:ro", "caddy_data:/data", "caddy_config:/config"]`<br><br>(`!override` remplace la liste au lieu de la concaténer à celle de `docker-compose.yml` — `!reset` ne fonctionne pas comme attendu pour ça sur Compose v5). Puis `docker compose up -d --force-recreate caddy`. C'est exactement ce qui a fait échouer Traefik (voir [Vault & Caddy](#vault--caddy-stack-locale)) : Caddy s'en sort une fois pointé sur le bon chemin, Traefik non. |
 | `vault-seed` ou `vault-agent` échoue | `docker compose logs vault-seed` / `vault-agent` — le plus souvent `vault` pas encore `healthy` (relance) ou `VAULT_TOKEN`/`VAULT_DEV_ROOT_TOKEN` incohérent entre les deux services |
 
 ---

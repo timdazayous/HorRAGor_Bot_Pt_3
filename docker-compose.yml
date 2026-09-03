@@ -17,36 +17,39 @@ services:
     command: python app/services/spark_service.py
 
   # =========================================================================
-  # Traefik — reverse proxy / routing. Découvre les conteneurs via le socket
-  # Docker (labels ci-dessous) et route chaque service sur un sous-domaine
+  # Caddy (caddy-docker-proxy) — reverse proxy / routing. Découvre les
+  # conteneurs via le socket Docker (labels `caddy`/`caddy.reverse_proxy`
+  # ci-dessous) et route chaque service sur un sous-domaine
   # *.horragor.localhost (résout vers 127.0.0.1 nativement, rien à ajouter
   # dans /etc/hosts). Aucun mapping de port direct n'est gardé sur les
-  # services proxifiés : tout passe par Traefik, pour de vrai.
+  # services proxifiés : tout passe par Caddy, pour de vrai.
   #
-  # Local uniquement : dashboard sans authentification (--api.insecure=true),
-  # pas de TLS (entrypoint HTTP simple). À ne jamais reproduire tel quel en
-  # dehors d'un poste de développement.
+  # Pourquoi Caddy plutôt que Traefik (le choix initial) : sur cette stack,
+  # Traefik échouait de façon reproductible à parler au moteur Docker via
+  # Docker Desktop (son client interne restait bloqué sur une très vieille
+  # version d'API HTTP et se faisait rejeter, alors qu'un appel direct au
+  # même socket répondait correctement) — un bug/incompatibilité côté client
+  # Traefik, pas une erreur de configuration. Caddy (via le plugin
+  # caddy-docker-proxy, qui parle au même socket Docker) n'a pas ce problème,
+  # vérifié en conditions réelles avant de remplacer Traefik. Détail complet
+  # dans le README, section "Vault & Traefik".
+  #
+  # Local uniquement : préfixe `http://` sur chaque label pour désactiver le
+  # HTTPS automatique de Caddy (sinon redirection 308 vers du HTTPS avec un
+  # certificat local auto-signé — inutile pour un simple usage local HTTP).
   # =========================================================================
 
-  traefik:
-    image: traefik:v3.2
-    container_name: horragor-traefik
+  caddy:
+    image: lucaslorentz/caddy-docker-proxy:latest
+    container_name: horragor-caddy
     restart: unless-stopped
-    command:
-      - --providers.docker=true
-      - --providers.docker.exposedbydefault=false
-      - --entrypoints.web.address=:80
-      - --api.dashboard=true
-      - --api.insecure=true
     ports:
       - "80:80"
-      - "8080:8080" # dashboard — http://traefik.horragor.localhost ou localhost:8080
+      - "2019:2019" # API admin Caddy (lecture) — http://localhost:2019/config/
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.dashboard.rule=Host(`traefik.horragor.localhost`)
-      - traefik.http.routers.dashboard.service=api@internal
+      - caddy_data:/data
+      - caddy_config:/config
 
   # =========================================================================
   # Vault — gestion de secrets (mode dev : stockage en mémoire, non
@@ -76,9 +79,8 @@ services:
       retries: 15
       start_period: 2s
     labels:
-      - traefik.enable=true
-      - traefik.http.routers.vault.rule=Host(`vault.horragor.localhost`)
-      - traefik.http.services.vault.loadbalancer.server.port=8200
+      - "caddy=http://vault.horragor.localhost"
+      - "caddy.reverse_proxy={{upstreams 8200}}"
 
   vault-seed:
     build:
@@ -138,9 +140,8 @@ services:
       vault-agent:
         condition: service_completed_successfully
     labels:
-      - traefik.enable=true
-      - traefik.http.routers.api.rule=Host(`api.horragor.localhost`)
-      - traefik.http.services.api.loadbalancer.server.port=8000
+      - "caddy=http://api.horragor.localhost"
+      - "caddy.reverse_proxy={{upstreams 8000}}"
 
   # =========================================================================
   # Monitoring — Langfuse (traçage agent LLM)
@@ -204,9 +205,8 @@ services:
       <<: *langfuse-worker-env
       # NEXTAUTH_SECRET : servi par Vault via env_file (voir langfuse-worker).
     labels:
-      - traefik.enable=true
-      - traefik.http.routers.langfuse.rule=Host(`langfuse.horragor.localhost`)
-      - traefik.http.services.langfuse.loadbalancer.server.port=3000
+      - "caddy=http://langfuse.horragor.localhost"
+      - "caddy.reverse_proxy={{upstreams 3000}}"
 
   langfuse-clickhouse:
     image: docker.io/clickhouse/clickhouse-server
@@ -319,9 +319,8 @@ services:
     depends_on:
       - api
     labels:
-      - traefik.enable=true
-      - traefik.http.routers.prometheus.rule=Host(`prometheus.horragor.localhost`)
-      - traefik.http.services.prometheus.loadbalancer.server.port=9090
+      - "caddy=http://prometheus.horragor.localhost"
+      - "caddy.reverse_proxy={{upstreams 9090}}"
 
   grafana:
     image: grafana/grafana:latest
@@ -342,9 +341,8 @@ services:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana
     labels:
-      - traefik.enable=true
-      - traefik.http.routers.grafana.rule=Host(`grafana.horragor.localhost`)
-      - traefik.http.services.grafana.loadbalancer.server.port=3000
+      - "caddy=http://grafana.horragor.localhost"
+      - "caddy.reverse_proxy={{upstreams 3000}}"
 
   uptime-kuma:
     image: louislam/uptime-kuma:1
@@ -353,11 +351,12 @@ services:
     volumes:
       - uptime_kuma_data:/app/data
     labels:
-      - traefik.enable=true
-      - traefik.http.routers.uptime.rule=Host(`uptime.horragor.localhost`)
-      - traefik.http.services.uptime.loadbalancer.server.port=3001
+      - "caddy=http://uptime.horragor.localhost"
+      - "caddy.reverse_proxy={{upstreams 3001}}"
 
 volumes:
+  caddy_data:
+  caddy_config:
   langfuse_postgres_data:
   langfuse_clickhouse_data:
   langfuse_clickhouse_logs:

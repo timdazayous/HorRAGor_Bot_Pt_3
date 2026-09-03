@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Démarre la stack Docker complète (API + Vault + Traefik + Langfuse +
+# Démarre la stack Docker complète (API + Vault + Caddy + Langfuse +
 # Prometheus/Grafana + Uptime Kuma).
 #
 # Pourquoi pas un simple `docker compose up -d` ? Docker Compose résout le
@@ -22,4 +22,4 @@ docker compose up vault-agent
 echo "[2/2] Démarrage du reste de la stack..."
 docker compose up -d
 
-echo "Stack démarrée. Voir http://traefik.horragor.localhost (ou :8080) pour la carte du routing."
+echo "Stack démarrée. Voir http://localhost:2019/config/ (API admin Caddy) pour la config de routing générée."
