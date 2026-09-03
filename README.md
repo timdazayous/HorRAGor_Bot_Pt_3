@@ -394,11 +394,11 @@ Docker (labels `traefik.*` dans `docker-compose.yml` — aucune config statique
 > (middleware d'auth sur le dashboard, `entrypoints.websecure` + certificats).
 
 > **Docker Desktop (Windows)** : le montage de `/var/run/docker.sock` (comment
-> Traefik découvre les autres conteneurs) échoue par défaut sur le contexte
-> `desktop-linux` tant que *Settings → Advanced → "Allow the default Docker
-> socket to be used"* n'est pas coché — sinon `docker compose logs traefik`
-> boucle sur `Failed to retrieve information of the docker client and server
-> host`. Voir [Dépannage](#dépannage).
+> Traefik découvre les autres conteneurs) peut échouer selon l'installation —
+> `docker compose logs traefik` boucle alors sur `Failed to retrieve
+> information of the docker client and server host`. Cause identifiée sur
+> Docker Desktop 4.89 : sa VM interne n'expose plus ce chemin classique.
+> Détail et piste de résolution dans [Dépannage](#dépannage).
 
 **Vault** (gestion de secrets, mode dev) remplace les secrets en clair de
 `.env`/`docker-compose.yml` pour toute la stack (API + Langfuse + Grafana).
@@ -615,7 +615,7 @@ HorRAGor_Bot_Pt_3/
 | `/auth/login` répond 500 ("Network is unreachable") depuis Docker | `SUPABASE_DB_URL` pointe sur la connexion directe (IPv6 seule) — utilise l'URL du connection pooler (voir section Configuration) |
 | `/chat` répond 401 alors que tu as un token | Le token a expiré (30 min par défaut) — l'IHM se rafraîchit automatiquement ; en curl, relance `/auth/login` |
 | `api`/`langfuse-*`/`grafana` démarrent avec des secrets vides ou plantent au démarrage | Lancé avec `docker compose up -d` seul au lieu de `bash scripts/up.sh` sur un premier démarrage — voir [Vault & Traefik](#vault--traefik-stack-locale) |
-| `http://api.horragor.localhost` (ou autre sous-domaine) ne répond pas, dashboard Traefik vide (`api/overview` ne liste que `api@internal`/`dashboard@internal`) | `docker compose logs traefik` — si tu vois en boucle `Failed to retrieve information of the docker client and server host`, Traefik n'arrive pas à joindre `/var/run/docker.sock` monté depuis le conteneur. **Vérifié sur Docker Desktop (Windows, contexte `desktop-linux`, pipe nommé)** : il faut activer *Settings → Advanced → "Allow the default Docker socket to be used"* (le libellé exact varie selon la version) pour que Docker Desktop expose ce socket compatible aux conteneurs Linux — sans ça, le montage échoue silencieusement pour tous les conteneurs, pas seulement Traefik. Le reste de la stack (Vault, API, Langfuse...) fonctionne normalement, seul le routing Traefik est affecté. |
+| `http://api.horragor.localhost` (ou autre sous-domaine) ne répond pas, dashboard Traefik vide (`api/overview` ne liste que `api@internal`/`dashboard@internal`) | `docker compose logs traefik` — si tu vois en boucle `Failed to retrieve information of the docker client and server host`, Traefik n'arrive pas à joindre `/var/run/docker.sock` monté depuis le conteneur. **Diagnostiqué sur Docker Desktop 4.89 (Windows, WSL2)** : la VM interne (`docker-desktop`) n'a plus de fichier à ce chemin classique — le vrai socket de l'API vit à `/run/guest-services/docker.proxy.sock`, et le mécanisme de compatibilité censé rediriger l'un vers l'autre pour les conteneurs montés ne fonctionnait pas sur cette installation (même après avoir posé un lien symbolique manuel côté VM et recréé le conteneur). **Pas un défaut de `docker-compose.yml`** — le chemin `/var/run/docker.sock` est le standard portable partout ailleurs (Linux, Mac, CI), donc pas question de le coder en dur en `/run/guest-services/...` dans le fichier versionné. Piste à essayer en premier : **quitter et relancer Docker Desktop entièrement** (pas juste `docker compose down/up`) — remède standard pour ce type de souci de proxy interne. Le reste de la stack (Vault, API, Langfuse...) fonctionne normalement, seul le routing Traefik est affecté. |
 | `vault-seed` ou `vault-agent` échoue | `docker compose logs vault-seed` / `vault-agent` — le plus souvent `vault` pas encore `healthy` (relance) ou `VAULT_TOKEN`/`VAULT_DEV_ROOT_TOKEN` incohérent entre les deux services |
 
 ---
