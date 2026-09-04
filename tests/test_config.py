@@ -16,7 +16,7 @@ def test_default_values_when_env_unset(monkeypatch):
     from src import config
     importlib.reload(config)
 
-    assert config.GROQ_MODEL == "llama-3.3-70b-versatile"
+    assert config.GROQ_MODEL == "openai/gpt-oss-120b"
     assert config.RAG_TEMPERATURE == 0.2
     assert config.SCRAPER_TEMPERATURE == 0.3
     assert config.NARRATION_TEMPERATURE == 0.9

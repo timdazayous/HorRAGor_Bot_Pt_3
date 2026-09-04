@@ -13,7 +13,7 @@ DATA_DIR       = BASE_DIR / "data"
 FAISS_INDEX_DIR = DATA_DIR / "faiss_index"
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-GROQ_MODEL   = os.environ.get("LLM_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL   = os.environ.get("LLM_MODEL", "openai/gpt-oss-120b")
 
 # Chaque agent garde la même base de modèle mais peut varier la température :
 # le Chercheur et l'Enquêteur restent factuels (froids), l'Écrivain a besoin
