@@ -1,0 +1,29 @@
+# Scrape le fichier de logs JSON de l'API (déjà écrit par Loguru — voir
+# src/logging_config.py) plutôt que de découvrir les conteneurs via
+# /var/run/docker.sock (docker_sd_configs) : évite toute dépendance au socket
+# Docker Desktop, dont l'accès s'est montré peu fiable sur cette stack
+# (cf. la section "Vault & Caddy" du README — le souci rencontré avec Traefik).
+#
+# Labels volontairement limités à job/app/env (faible cardinalité) — le détail
+# (niveau, message, module, ligne...) reste dans le corps JSON du log, filtrable
+# en LogQL avec `| json`, jamais promu en label.
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: horragor-api
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: horragor-api
+          app: horragor
+          env: dev
+          __path__: /var/log/horragor/horragor.jsonl

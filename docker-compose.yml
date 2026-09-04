@@ -306,6 +306,32 @@ services:
       - langfuse_postgres_data:/var/lib/postgresql/data
 
   # =========================================================================
+  # Loki + Promtail — centralisation des logs applicatifs (Grafana = même
+  # écran que les métriques Prometheus). Promtail scrape directement le
+  # fichier logs/horragor.jsonl (Loguru) plutôt que de découvrir les
+  # conteneurs via /var/run/docker.sock — voir monitoring/promtail/promtail-config.yml.
+  # =========================================================================
+
+  loki:
+    image: grafana/loki:3.3.2
+    container_name: horragor-loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki_data:/loki
+
+  promtail:
+    image: grafana/promtail:3.3.2
+    container_name: horragor-promtail
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    volumes:
+      - ./monitoring/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      - ./logs:/var/log/horragor:ro
+
+  # =========================================================================
   # Monitoring — Prometheus + Grafana (métriques API/graphe) + Uptime Kuma
   # =========================================================================
 
@@ -357,6 +383,7 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+  loki_data:
   langfuse_postgres_data:
   langfuse_clickhouse_data:
   langfuse_clickhouse_logs:

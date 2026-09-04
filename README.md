@@ -30,6 +30,7 @@ et résume les deux parties précédentes pour comprendre d'où vient le code.
   - [Authentification — Refresh Tokens](#authentification--refresh-tokens)
   - [Monitoring — Langfuse, Prometheus, Grafana, Uptime Kuma](#monitoring--langfuse-prometheus-grafana-uptime-kuma)
   - [Vault & Caddy (stack locale)](#vault--caddy-stack-locale)
+  - [Observabilité — Loki](#observabilité--loki)
   - [Journalisation (Loguru)](#journalisation-loguru)
   - [Tests & couverture](#tests--couverture)
   - [Documentation technique (Sphinx)](#documentation-technique-sphinx)
@@ -179,7 +180,7 @@ dessinée à la main) est disponible dans la
 | Composant | Technologie |
 |---|---|
 | Orchestration multi-agent | **LangGraph** (`StateGraph`) |
-| LLM | Groq — `llama-3.3-70b-versatile` (un client par agent, températures différenciées) |
+| LLM | Groq — `openai/gpt-oss-120b` (un client par agent, températures différenciées) |
 | Back-End | FastAPI + Uvicorn (async) |
 | Front-End | Streamlit — thème dark horror animé |
 | Embeddings | `sentence-transformers/all-MiniLM-L6-v2` |
@@ -196,6 +197,7 @@ dessinée à la main) est disponible dans la
 | Dépendances | `uv` |
 | Routing (stack locale) | **Caddy** (`caddy-docker-proxy`) — sous-domaines `*.horragor.localhost`, aucun port direct |
 | Secrets (stack locale) | **HashiCorp Vault** (mode dev) + Vault Agent — rendu des secrets en `env_file` |
+| Logs (stack locale) | **Loki** + **Promtail** (scrape de fichier, pas du socket Docker) |
 
 ### Installation
 
@@ -470,6 +472,46 @@ problème.
 > elles ne servent plus qu'à amorcer Vault (`vault_seed.py`), pas à être lues
 > directement par les conteneurs.
 
+### Observabilité — Loki
+
+Ajout pédagogique (cours Grafana/Loki/Prometheus) : Loki centralise les logs
+applicatifs à côté des métriques Prometheus déjà en place, avec Grafana comme
+écran unique pour corréler les deux (le "combien" et le "pourquoi").
+
+**Choix d'implémentation** : le principe habituel (vu en cours) fait découvrir
+les conteneurs à Promtail via `/var/run/docker.sock`
+(`docker_sd_configs`). Vu l'historique de cette session avec Traefik sur ce
+Docker Desktop précis (socket peu fiable, voir plus haut), **Promtail scrape
+directement `logs/horragor.jsonl`** — un fichier déjà écrit par Loguru
+(`src/logging_config.py`), déjà monté en volume par le service `api`. Zéro
+dépendance au socket Docker, et c'est justement le log applicatif qui a de la
+valeur ici (pas les logs internes de Langfuse/Postgres/etc.).
+
+`src/logging_config.py` écrit désormais **trois** sinks Loguru : console
+(coloré), fichier texte `horragor.log` (lecture humaine, inchangé), et
+`horragor.jsonl` — une ligne JSON **plate** par entrée (`time`, `level`,
+`message`, `module`, `function`, `line`), volontairement pas `serialize=True`
+qui imbrique tout sous `record.level.name` et complique le LogQL. Vérifié en
+conditions réelles : `{job="horragor-api"} | json | level="WARNING"` retrouve
+correctement les lignes attendues.
+
+Labels Promtail volontairement limités à `job`/`app`/`env` (faible
+cardinalité) — le piège classique de Loki est de mettre des valeurs à haute
+cardinalité (`user_id`, `request_id`...) en labels, ce qui fait exploser le
+nombre de flux indexés. Tout le détail reste dans le corps JSON, filtrable
+avec `| json` côté LogQL, jamais promu en label.
+
+**Ajouts au dashboard Grafana existant** (`monitoring/grafana/provisioning/dashboards/json/horragor.json`,
+provisionné en code comme le reste) : *Logs par niveau* (volume par `level`)
+et *Logs récents (warning/erreur)*. Une **règle d'alerte** provisionnée
+(`monitoring/grafana/provisioning/alerting/rules.yml`) se déclenche au-delà de
+3 erreurs en 2 minutes sur l'API — testée réellement (règle chargée sans
+erreur dans Grafana Alerting, requête Loki évaluée chaque minute avec succès).
+
+> **Dev-only** : Loki en mode single-binary, stockage filesystem (pas d'object
+> storage), rétention indéfinie par défaut. Pas de route Caddy pour Loki (pas
+> d'UI propre à visiter — seul Grafana l'interroge).
+
 ### Journalisation (Loguru)
 
 `src/logging_config.py` intercepte **tous** les logs — API, graphe
@@ -613,7 +655,7 @@ HorRAGor_Bot_Pt_3/
 │       └── pipeline.py                # Assemblage et compilation du StateGraph
 ├── docs/                              # Documentation Sphinx (source + scripts de génération)
 ├── migrations/                        # Tables auth (users + role, refresh_tokens) + seed comptes + vault_seed.py
-├── monitoring/                        # Config Prometheus + provisioning Grafana
+├── monitoring/                        # Config Prometheus + Promtail + provisioning Grafana (datasources, dashboard, alerting)
 ├── vault/                             # agent-config.hcl + secrets.env.tpl (Vault Agent) — rendered/ généré, gitignored
 ├── scripts/up.sh                      # Démarrage 2 phases (Vault -> reste de la stack)
 ├── tests/                             # Tests unitaires Partie 3 + sécurité

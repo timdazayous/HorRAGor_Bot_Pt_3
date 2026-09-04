@@ -78,6 +78,33 @@
           "datasource": { "type": "prometheus", "uid": "prometheus" }
         }
       ]
+    },
+    {
+      "id": 6,
+      "title": "Logs par niveau (Loki)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "expr": "sum by (level) (count_over_time({job=\"horragor-api\"} | json [1m]))",
+          "legendFormat": "{{level}}",
+          "datasource": { "type": "loki", "uid": "loki" }
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Logs récents (warning/erreur)",
+      "type": "logs",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "expr": "{job=\"horragor-api\"} | json | level=~\"WARNING|ERROR\"",
+          "datasource": { "type": "loki", "uid": "loki" }
+        }
+      ]
     }
   ]
 }

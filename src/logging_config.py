@@ -6,6 +6,7 @@ tierces qui utilisent le module `logging` standard (uvicorn, httpx,
 sentence_transformers...) — passent par les mêmes sinks Loguru, pour que
 l'équipe DevOps n'ait plus jamais à recouper deux formats de logs différents.
 """
+import json
 import logging
 import sys
 from pathlib import Path
@@ -13,6 +14,30 @@ from pathlib import Path
 from loguru import logger
 
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
+
+
+def _json_line(record: dict) -> str:
+    """
+    Format JSON **plat** (une ligne = un objet, champs au premier niveau) —
+    volontairement pas `serialize=True` de Loguru, qui imbrique tout sous
+    `record.level.name`/`record.message` et complique le LogQL côté Loki
+    (`| json` sur du JSON imbriqué aplatit les clés en `record_level_name`,
+    peu pratique). Ici `level`/`message`/... sont directement filtrables.
+    Le résultat est stocké dans `extra` puis réinjecté via un simple
+    placeholder `{extra[...]}` : Loguru interprète la valeur de retour de
+    `format` comme un gabarit `.format()`, donc y mettre du JSON brut (avec
+    ses propres accolades) casserait le rendu si on le retournait directement.
+    """
+    payload = {
+        "time": record["time"].isoformat(),
+        "level": record["level"].name,
+        "message": record["message"],
+        "module": record["name"],
+        "function": record["function"],
+        "line": record["line"],
+    }
+    record["extra"]["json_line"] = json.dumps(payload, ensure_ascii=False)
+    return "{extra[json_line]}\n"
 
 
 class _InterceptHandler(logging.Handler):
@@ -64,4 +89,16 @@ def setup_logging(level: str = "INFO") -> None:
         compression="zip",
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} — {message}",
         enqueue=True,  # thread/process-safe (FastAPI + LangGraph tournent en async/threads)
+    )
+    # Sink JSON dédié à l'ingestion Loki (Promtail scrape ce fichier, pas le
+    # texte ci-dessus qui n'est pas machine-parsable) — une ligne JSON plate
+    # par entrée, filtrable en LogQL via `| json` (level, message, module...).
+    logger.add(
+        LOG_DIR / "horragor.jsonl",
+        level=level,
+        rotation="10 MB",
+        retention="7 days",
+        compression="zip",
+        format=_json_line,
+        enqueue=True,
     )
