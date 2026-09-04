@@ -9,10 +9,14 @@ successives, chacune corrigeant les limites de la précédente :
 | **Partie 1** | Pipeline d'ingestion de données — construire la base de connaissances (1 179 films, 5 sources, Supabase) | ✅ Acquis, socle de données |
 | **Partie 2** | Agent conversationnel monolithique (architecture **ReAct**) — un seul LLM, 6 tools, "Le Juge" évaluateur | ✅ Acquis, **remplacé par la Partie 3** |
 | **Partie 3** | Architecture **multi-agent distribuée** (LangGraph) + industrialisation MLOps complète (monitoring, tests, docs, CI/CD) | ✅ Acquis — ce README |
-| **Projet final sécurité** | Durcissement de l'API : OAuth2, rôles, rotation/révocation, rate limiting, CORS, fail-closed (voir [`projet-final-horragor.md`](projet-final-horragor.md)) | ✅ Acquis — voir [Sécurité](#authentification--refresh-tokens) |
+| **Projet final sécurité** | Durcissement de l'API : OAuth2, rôles, rotation/révocation, rate limiting, CORS, fail-closed (voir [`projet-final-horragor.md`](projet-final-horragor.md)) | ✅ Acquis (5/5) — voir [Sécurité](#authentification--refresh-tokens) |
+| **Infra locale (exercice)** | Vault (secrets), Caddy (routing), Loki (logs) sur la stack Docker — pédagogique, pas requis par un brief | ✅ Acquis — voir [Vault & Caddy](#vault--caddy-stack-locale) / [Observabilité — Loki](#observabilité--loki) |
 
-Ce document couvre l'état actuel du projet (Partie 3 + durcissement sécurité)
-et résume les deux parties précédentes pour comprendre d'où vient le code.
+Ce document couvre l'état actuel du projet (Partie 3 + durcissement sécurité +
+infra locale) et résume les deux parties précédentes pour comprendre d'où
+vient le code. **Le projet n'est pas 100 % clos** : 3 items du cahier des
+charges MLOps d'origine restent hors périmètre, voir
+[Reste à faire](#reste-à-faire) tout en bas.
 
 ---
 
@@ -40,6 +44,7 @@ et résume les deux parties précédentes pour comprendre d'où vient le code.
   - [Dépannage](#dépannage)
 - [Branches de développement](#branches-de-développement)
 - [Sécurité — bilan du projet final](#sécurité--bilan-du-projet-final)
+- [Reste à faire](#reste-à-faire)
 
 ---
 
@@ -726,11 +731,20 @@ de [`test_api.py`](test_api.py) :
 Détail technique de chaque point : voir [Authentification — Refresh Tokens](#authentification--refresh-tokens)
 ci-dessus.
 
-**Hors périmètre de ce livrable** (items plus larges du cahier des charges
-MLOps de la Partie 3, non couverts par `projet-final-horragor.md`) :
-- **Couche Données** : base de données encapsulée derrière sa propre API,
-  dans un réseau Docker privé **étanche** (inaccessible de l'extérieur).
-- **Couche Présentation** : UI Streamlit conteneurisée, communication
-  chiffrée vers l'API.
-- **Gouvernance** : CI/CD étendu aux 3 couches, anomalies trackées en
-  **GitHub Issues**.
+---
+
+## Reste à faire
+
+Le cahier des charges MLOps d'origine ([`Contexte_Part_3_V2.md`](Contexte_Part_3_V2.md))
+va plus loin que ce que couvre `projet-final-horragor.md` (sécurité de l'API
+seule). Trois items restent **non faits**, hors périmètre de tout ce qui
+précède dans ce README :
+
+| Item | Attendu |
+|---|---|
+| **Couche Données** | Base de données encapsulée derrière sa propre API, dans un réseau Docker privé **étanche** (inaccessible de l'extérieur — aujourd'hui l'API parle directement à Supabase). |
+| **Couche Présentation** | UI Streamlit conteneurisée (aujourd'hui lancée hors Docker, `streamlit run app_frontend.py`), communication chiffrée vers l'API. |
+| **Gouvernance** | CI/CD étendu aux 3 couches (Données/Intelligence/Présentation), anomalies trackées en **GitHub Issues**. |
+
+Tout le reste documenté dans ce README (Parties 1-3, sécurité 5/5, Vault/Caddy,
+Loki) est acquis et vérifié en conditions réelles.
