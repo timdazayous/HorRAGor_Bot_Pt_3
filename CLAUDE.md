@@ -13,6 +13,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Two brief documents describe what Partie 3 asked for: `Contexte_Part_3_V2.md` (official brief text) and `Plan_Part_3_V1.md` (the original migration plan from the Partie 2 monolith). `projet-final-horragor.md` is the security brief.
 
+**Next up (not started)**: 3 items from the original MLOps brief (`Contexte_Part_3_V2.md`) remain undone — see README.md's "Reste à faire" section for the up-to-date summary, kept in sync with this file. In order of likely dependency:
+1. **Couche Données** — encapsulate the database behind its own API, inside a private/sealed Docker network (today `src/auth.py` and `src/tools/rag_tool.py` both talk to Supabase directly over the public internet from wherever the API runs — no network isolation exists yet).
+2. **Couche Présentation** — containerize the Streamlit UI (`app_frontend.py` currently only runs via `streamlit run` on the host, never in `docker-compose.yml`) and encrypt its traffic to the API (today plain HTTP, even through Caddy).
+3. **Gouvernance** — extend CI/CD to cover all 3 layers (today `.github/workflows/ci.yml` only builds/tests the `api` layer) and start tracking anomalies as GitHub Issues.
+Before touching any of these, re-read the README's "Reste à faire" + "Vault & Caddy" + "Observabilité — Loki" sections — the existing Docker Desktop socket quirks (Traefik vs Caddy) and the two-phase `scripts/up.sh` startup constraint both apply to whatever new services get added here too.
+
 **Fail-closed gotcha**: `src/config.py` raises `RuntimeError` at import time if `JWT_SECRET_KEY` is unset — any script/test that imports `src.config` (directly or transitively via `src.auth`/`src.main`) needs that env var present. Locally `.env` covers it; CI sets a dummy value explicitly in the `test` and `docs` jobs (`.github/workflows/ci.yml`) — remember to do the same for any new job that imports the app.
 
 ## Commands
