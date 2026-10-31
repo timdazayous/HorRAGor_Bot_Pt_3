@@ -149,9 +149,18 @@ services:
     networks:
       - default
       - db_internal
+    # Deux sites Caddy sur le même service (syntaxe multi-site de
+    # caddy-docker-proxy, labels `caddy_N`/`caddy_N.xxx`) : `caddy_0` reste la
+    # route HTTP externe habituelle (navigateur/Swagger). `caddy_1` est une
+    # route HTTPS interne supplémentaire (`tls internal` = CA auto-générée et
+    # auto-signée par Caddy localement) que seule l'IHM `frontend` utilise —
+    # voir "Couche Présentation" dans le README pour le détail et les limites.
     labels:
-      - "caddy=http://api.horragor.localhost"
-      - "caddy.reverse_proxy={{upstreams 8000}}"
+      - "caddy_0=http://api.horragor.localhost"
+      - "caddy_0.reverse_proxy={{upstreams 8000}}"
+      - "caddy_1=https://api-internal.horragor.localhost"
+      - "caddy_1.tls=internal"
+      - "caddy_1.reverse_proxy={{upstreams 8000}}"
 
   # =========================================================================
   # db-api — Couche Données : seul service qui parle SQL à Supabase pour les
@@ -178,6 +187,37 @@ services:
         condition: service_completed_successfully
     networks:
       - db_internal
+
+  # =========================================================================
+  # frontend — Couche Présentation : UI Streamlit conteneurisée, parle à l'API
+  # en HTTPS interne (route `caddy_1` ci-dessus, CA locale auto-signée de
+  # Caddy). API_CA_CERT_PATH pointe vers le certificat racine de cette CA,
+  # extrait du volume `caddy_data` monté en lecture seule — httpx le valide
+  # au lieu d'accepter le certificat en bloc. Limite pédagogique assumée :
+  # cette CA n'existe que localement, rien à voir avec un vrai PKI public.
+  # =========================================================================
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: horragor-frontend
+    restart: unless-stopped
+    env_file:
+      - .env
+      - path: ./vault/rendered/secrets.env
+        required: false # absent au tout premier `up`, avant que vault-agent ne l'ait rendu
+    environment:
+      API_BASE_URL: https://api-internal.horragor.localhost
+      API_CA_CERT_PATH: /caddy-data/caddy/pki/authorities/local/root.crt
+    volumes:
+      - caddy_data:/caddy-data:ro
+    depends_on:
+      api:
+        condition: service_started
+    labels:
+      - "caddy=http://frontend.horragor.localhost"
+      - "caddy.reverse_proxy={{upstreams 8501}}"
 
   # =========================================================================
   # Monitoring — Langfuse (traçage agent LLM)

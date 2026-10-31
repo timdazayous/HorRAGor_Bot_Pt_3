@@ -120,7 +120,7 @@ def _make_fake_post(chat_answer: str):
     tokens, l'endpoint /chat renvoie la réponse de l'agent — reproduit le
     flux réel (login silencieux avant le premier /chat).
     """
-    def fake_post(url, json=None, timeout=None, headers=None):
+    def fake_post(url, json=None, timeout=None, headers=None, **kwargs):
         if url.endswith("/auth/login") or url.endswith("/auth/refresh"):
             return _FakeResponse({"access_token": "fake-access", "refresh_token": "fake-refresh", "token_type": "bearer"})
         return _FakeResponse({
@@ -164,7 +164,7 @@ class TestAuthenticatedPost:
     def test_logs_in_once_then_reuses_the_token(self, monkeypatch):
         calls = []
 
-        def fake_post(url, json=None, timeout=None, headers=None):
+        def fake_post(url, json=None, timeout=None, headers=None, **kwargs):
             calls.append(url)
             if url == app_frontend.AUTH_LOGIN_URL:
                 return _FakeResponse({"access_token": "tok-1", "refresh_token": "ref-1"})
@@ -182,7 +182,7 @@ class TestAuthenticatedPost:
         st.session_state.tokens = {"access_token": "expired", "refresh_token": "ref-old"}
         chat_calls = []
 
-        def fake_post(url, json=None, timeout=None, headers=None):
+        def fake_post(url, json=None, timeout=None, headers=None, **kwargs):
             if url == app_frontend.AUTH_REFRESH_URL:
                 return _FakeResponse({"access_token": "tok-new", "refresh_token": "ref-new"})
             if url == app_frontend.API_URL:
@@ -204,7 +204,7 @@ class TestAuthenticatedPost:
         st.session_state.tokens = {"access_token": "expired", "refresh_token": "also-expired"}
         chat_calls = []
 
-        def fake_post(url, json=None, timeout=None, headers=None):
+        def fake_post(url, json=None, timeout=None, headers=None, **kwargs):
             if url == app_frontend.AUTH_REFRESH_URL:
                 return _FakeResponse({"detail": "expired"}, status_code=401)
             if url == app_frontend.AUTH_LOGIN_URL:

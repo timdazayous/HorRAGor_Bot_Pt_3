@@ -33,6 +33,7 @@ charges MLOps d'origine restent hors périmètre, voir
   - [Lancement](#lancement)
   - [Authentification — Refresh Tokens](#authentification--refresh-tokens)
   - [Couche Données — db-api](#couche-données--db-api)
+  - [Couche Présentation — UI Streamlit conteneurisée](#couche-présentation--ui-streamlit-conteneurisée)
   - [Monitoring — Langfuse, Prometheus, Grafana, Uptime Kuma](#monitoring--langfuse-prometheus-grafana-uptime-kuma)
   - [Vault & Caddy (stack locale)](#vault--caddy-stack-locale)
   - [Observabilité — Loki](#observabilité--loki)
@@ -376,6 +377,31 @@ Supabase (`users`, `refresh_tokens`, `film`, `genre`, `film_genre`,
   donc `db-api` embarque des dépendances qu'il n'utilise jamais comme
   `torch`/`faiss`) — scinder les dépendances par couche aurait été un effort
   disproportionné pour cet exercice pédagogique.
+
+### Couche Présentation — UI Streamlit conteneurisée
+
+L'IHM (`app_frontend.py`) tourne désormais aussi dans Docker (`Dockerfile.frontend`,
+service `frontend`), routée par Caddy comme tout le reste (`http://frontend.horragor.localhost`).
+
+- **Trafic chiffré vers l'API** : `api` expose une 2ᵉ route Caddy interne en
+  plus de la route externe habituelle — `caddy_0=http://api.horragor.localhost`
+  (navigateur/Swagger, inchangé) et `caddy_1=https://api-internal.horragor.localhost`
+  avec `caddy_1.tls=internal` (Caddy génère et signe lui-même un certificat
+  local, syntaxe multi-site de `caddy-docker-proxy` : labels `caddy_N`/`caddy_N.xxx`
+  sur un même service). `frontend` parle à l'API via cette 2ᵉ route
+  (`API_BASE_URL=https://api-internal.horragor.localhost`).
+- `frontend` monte le volume `caddy_data` en lecture seule pour récupérer le
+  certificat racine de la CA interne de Caddy
+  (`/caddy-data/caddy/pki/authorities/local/root.crt`, exposé côté app via
+  `API_CA_CERT_PATH`) — `app_frontend.py` le passe à `httpx` via `verify=`,
+  pour valider ce certificat plutôt que l'accepter en bloc.
+- **Limite pédagogique assumée** : cette CA n'existe qu'en local, générée par
+  Caddy lui-même — ça démontre le principe (chiffrement + vérification de
+  certificat réels) mais ce n'est pas un vrai PKI public, à ne pas reproduire
+  tel quel en production.
+- Hors Docker (`streamlit run app_frontend.py` sur l'hôte), `API_BASE_URL`
+  garde son défaut `http://localhost:8000` et `API_CA_CERT_PATH` reste vide :
+  `httpx` retombe sur la vérification TLS système normale.
 
 ### Monitoring — Langfuse, Prometheus, Grafana, Uptime Kuma
 
@@ -767,16 +793,18 @@ ci-dessus.
 
 Le cahier des charges MLOps d'origine ([`Contexte_Part_3_V2.md`](Contexte_Part_3_V2.md))
 va plus loin que ce que couvre `projet-final-horragor.md` (sécurité de l'API
-seule). Deux items restent **non faits**, hors périmètre de tout ce qui
-précède dans ce README :
+seule). Un item reste **non fait**, hors périmètre de tout ce qui précède
+dans ce README :
 
 | Item | Attendu |
 |---|---|
-| **Couche Présentation** | UI Streamlit conteneurisée (aujourd'hui lancée hors Docker, `streamlit run app_frontend.py`), communication chiffrée vers l'API. |
 | **Gouvernance** | CI/CD étendu aux 3 couches (Données/Intelligence/Présentation), anomalies trackées en **GitHub Issues**. |
 
-**Couche Données** : fait — voir [Couche Données — db-api](#couche-données--db-api)
-ci-dessus (base encapsulée derrière `db-api`, réseau Docker `db_internal` étanche).
+**Couche Données** et **Couche Présentation** : faites — voir
+[Couche Données — db-api](#couche-données--db-api) (base encapsulée derrière
+`db-api`, réseau Docker `db_internal` étanche) et
+[Couche Présentation — UI Streamlit conteneurisée](#couche-présentation--ui-streamlit-conteneurisée)
+(UI dans Docker, trafic chiffré vers l'API via la CA locale Caddy) ci-dessus.
 
 Tout le reste documenté dans ce README (Parties 1-3, sécurité 5/5, Vault/Caddy,
 Loki) est acquis et vérifié en conditions réelles.

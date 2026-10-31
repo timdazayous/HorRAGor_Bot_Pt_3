@@ -16,6 +16,15 @@ AUTH_REFRESH_URL = f"{API_BASE_URL}/auth/refresh"
 SERVICE_ACCOUNT_USERNAME = os.environ.get("SERVICE_ACCOUNT_USERNAME")
 SERVICE_ACCOUNT_PASSWORD = os.environ.get("SERVICE_ACCOUNT_PASSWORD")
 
+# Couche Présentation — Caddy sert l'API en HTTPS interne (tls internal, voir
+# docker-compose.yml) via sa propre CA locale. API_CA_CERT_PATH pointe vers le
+# certificat racine de cette CA (monté depuis le volume caddy_data) pour que
+# httpx valide le certificat au lieu de l'accepter ou de le rejeter en bloc.
+# Vide hors Docker (API_BASE_URL reste http://localhost:8000) : httpx retombe
+# alors sur la vérification TLS système normale (`verify=True`).
+API_CA_CERT_PATH = os.environ.get("API_CA_CERT_PATH")
+_VERIFY = API_CA_CERT_PATH or True
+
 
 def _login() -> dict:
     """Authentifie le service Streamlit auprès de l'API (compte de service, pas d'utilisateur final)."""
@@ -23,13 +32,16 @@ def _login() -> dict:
         AUTH_LOGIN_URL,
         json={"username": SERVICE_ACCOUNT_USERNAME, "password": SERVICE_ACCOUNT_PASSWORD},
         timeout=10.0,
+        verify=_VERIFY,
     )
     response.raise_for_status()
     return response.json()
 
 
 def _refresh_tokens(refresh_token: str) -> dict:
-    response = httpx.post(AUTH_REFRESH_URL, json={"refresh_token": refresh_token}, timeout=10.0)
+    response = httpx.post(
+        AUTH_REFRESH_URL, json={"refresh_token": refresh_token}, timeout=10.0, verify=_VERIFY,
+    )
     response.raise_for_status()
     return response.json()
 
@@ -45,7 +57,7 @@ def _authenticated_post(url: str, json: dict, timeout: float) -> httpx.Response:
 
     def _post_with_current_token() -> httpx.Response:
         headers = {"Authorization": f"Bearer {st.session_state.tokens['access_token']}"}
-        return httpx.post(url, json=json, headers=headers, timeout=timeout)
+        return httpx.post(url, json=json, headers=headers, timeout=timeout, verify=_VERIFY)
 
     response = _post_with_current_token()
 
