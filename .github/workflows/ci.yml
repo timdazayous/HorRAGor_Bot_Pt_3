@@ -69,33 +69,54 @@ jobs:
         run: uv run sphinx-build -b html docs/source docs/build -W
 
   # ---------------------------------------------------------------------------
-  # Couche Intelligence — l'image Docker doit se construire sans erreur
+  # Les 3 couches — chaque image Docker doit se construire sans erreur
+  # (Gouvernance : CI étendue à Données/db-api et Présentation/frontend, pas
+  # seulement l'API comme avant)
   # ---------------------------------------------------------------------------
   docker-build:
-    name: Build image Docker (API)
+    name: Build images Docker (3 couches)
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - dockerfile: Dockerfile.api
+            tag: horragor-api:ci
+          - dockerfile: Dockerfile.dbapi
+            tag: horragor-dbapi:ci
+          - dockerfile: Dockerfile.frontend
+            tag: horragor-frontend:ci
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      - name: Build Dockerfile.api
+      - name: Build ${{ matrix.dockerfile }}
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.api
+          file: ${{ matrix.dockerfile }}
           push: false
-          tags: horragor-api:ci
+          tags: ${{ matrix.tag }}
 
   # ---------------------------------------------------------------------------
-  # CD — publie l'image sur GHCR uniquement sur push vers main, une fois tout vert
+  # CD — publie les 3 images sur GHCR uniquement sur push vers main, une fois
+  # tout vert
   # ---------------------------------------------------------------------------
   publish:
-    name: Publier l'image (GHCR)
+    name: Publier les images (GHCR)
     needs: [lint, test, docs, docker-build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    strategy:
+      matrix:
+        include:
+          - dockerfile: Dockerfile.api
+            image: api
+          - dockerfile: Dockerfile.dbapi
+            image: dbapi
+          - dockerfile: Dockerfile.frontend
+            image: frontend
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -105,12 +126,41 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build & push horragor-api
+      - name: Build & push ${{ matrix.image }}
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.api
+          file: ${{ matrix.dockerfile }}
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}-api:latest
-            ghcr.io/${{ github.repository }}-api:${{ github.sha }}
+            ghcr.io/${{ github.repository }}-${{ matrix.image }}:latest
+            ghcr.io/${{ github.repository }}-${{ matrix.image }}:${{ github.sha }}
+
+  # ---------------------------------------------------------------------------
+  # Gouvernance — un échec sur main devient automatiquement une Issue
+  # GitHub trackée (anomalie), plutôt que de rester invisible dans les logs
+  # Actions. Ne s'exécute jamais sur une PR : seul un échec sur main (déjà
+  # mergé) constitue une vraie anomalie à tracker.
+  # ---------------------------------------------------------------------------
+  report-failure:
+    name: Ouvrir une Issue si la CI échoue sur main
+    needs: [lint, test, docs, docker-build]
+    if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `CI en échec sur main — ${context.sha.slice(0, 7)}`,
+              labels: ["anomalie", "ci"],
+              body: [
+                `La CI a échoué sur \`main\` au commit ${context.sha}.`,
+                ``,
+                `Logs : ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              ].join("\n"),
+            });

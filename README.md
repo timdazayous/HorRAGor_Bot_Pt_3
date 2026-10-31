@@ -14,8 +14,8 @@ successives, chacune corrigeant les limites de la précédente :
 
 Ce document couvre l'état actuel du projet (Partie 3 + durcissement sécurité +
 infra locale) et résume les deux parties précédentes pour comprendre d'où
-vient le code. **Le projet n'est pas 100 % clos** : 3 items du cahier des
-charges MLOps d'origine restent hors périmètre, voir
+vient le code. Les 3 items du cahier des charges MLOps d'origine (Couche
+Données, Couche Présentation, Gouvernance) sont acquis — détail dans
 [Reste à faire](#reste-à-faire) tout en bas.
 
 ---
@@ -623,15 +623,25 @@ réelle du `StateGraph` compilé — jamais obsolète).
 
 ### CI/CD
 
-`.github/workflows/ci.yml` s'exécute sur chaque push / pull request :
+`.github/workflows/ci.yml` s'exécute sur chaque push / pull request, étendu
+aux **3 couches** (Gouvernance — `docker-build`/`publish` ne construisaient
+que l'API auparavant) :
 
 | Job | Rôle |
 |---|---|
 | `lint` | `ruff check` |
 | `test` | Suite complète + seuil de couverture ≥ 80 %, puis le scénario `test_e2e.py` |
 | `docs` | Régénère OpenAPI + diagramme, build Sphinx (`-W`, warnings = erreurs) |
-| `docker-build` | Build de `Dockerfile.api` |
-| `publish` | Sur push vers `main` uniquement, si tout est vert : build & push sur `ghcr.io/<repo>-api` (via `GITHUB_TOKEN`, aucun secret à configurer) |
+| `docker-build` | Build de `Dockerfile.api`, `Dockerfile.dbapi`, `Dockerfile.frontend` (matrice) |
+| `publish` | Sur push vers `main` uniquement, si tout est vert : build & push des 3 images sur `ghcr.io/<repo>-{api,dbapi,frontend}` (via `GITHUB_TOKEN`, aucun secret à configurer) |
+| `report-failure` | Si la CI échoue sur `main` : ouvre automatiquement une Issue GitHub (label `anomalie`) avec le lien vers les logs du run |
+
+**Anomalies trackées en GitHub Issues** : en plus de `report-failure`
+ci-dessus, le template
+[`.github/ISSUE_TEMPLATE/anomalie.yml`](.github/ISSUE_TEMPLATE/anomalie.yml)
+structure tout signalement manuel (couche affectée, gravité, étapes de
+reproduction) — utilisé pour toute anomalie constatée en dehors de la CI
+(comportement du graphe, UI, etc.).
 
 ### Endpoints API
 
@@ -792,19 +802,12 @@ ci-dessus.
 ## Reste à faire
 
 Le cahier des charges MLOps d'origine ([`Contexte_Part_3_V2.md`](Contexte_Part_3_V2.md))
-va plus loin que ce que couvre `projet-final-horragor.md` (sécurité de l'API
-seule). Un item reste **non fait**, hors périmètre de tout ce qui précède
-dans ce README :
-
-| Item | Attendu |
-|---|---|
-| **Gouvernance** | CI/CD étendu aux 3 couches (Données/Intelligence/Présentation), anomalies trackées en **GitHub Issues**. |
-
-**Couche Données** et **Couche Présentation** : faites — voir
-[Couche Données — db-api](#couche-données--db-api) (base encapsulée derrière
-`db-api`, réseau Docker `db_internal` étanche) et
+allait plus loin que ce que couvre `projet-final-horragor.md` (sécurité de
+l'API seule) : 3 items — Couche Données, Couche Présentation, Gouvernance.
+**Les 3 sont faits**, voir respectivement
+[Couche Données — db-api](#couche-données--db-api),
 [Couche Présentation — UI Streamlit conteneurisée](#couche-présentation--ui-streamlit-conteneurisée)
-(UI dans Docker, trafic chiffré vers l'API via la CA locale Caddy) ci-dessus.
+et [CI/CD](#cicd) ci-dessus.
 
 Tout le reste documenté dans ce README (Parties 1-3, sécurité 5/5, Vault/Caddy,
 Loki) est acquis et vérifié en conditions réelles.

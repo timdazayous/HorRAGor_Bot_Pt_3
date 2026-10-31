@@ -1,0 +1,56 @@
+name: Anomalie
+description: Signaler un bug ou un comportement inattendu sur l'une des 3 couches du projet.
+title: "[Anomalie] "
+labels: ["anomalie"]
+body:
+  - type: dropdown
+    id: couche
+    attributes:
+      label: Couche affectée
+      options:
+        - Données (db-api, Supabase)
+        - Intelligence (api, graphe multi-agent)
+        - Présentation (frontend, Streamlit)
+        - Infra (Docker Compose, Vault, Caddy, CI/CD)
+        - Autre / ne sait pas
+    validations:
+      required: true
+
+  - type: dropdown
+    id: gravite
+    attributes:
+      label: Gravité
+      options:
+        - Bloquant (service inutilisable)
+        - Majeur (fonctionnalité cassée, contournement possible)
+        - Mineur (gênant mais sans impact fonctionnel)
+        - Cosmétique
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Qu'observes-tu ? Qu'attendais-tu à la place ?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Étapes de reproduction
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / captures pertinentes
+      description: Colle ici tout extrait de logs.horragor.jsonl, logs Docker, ou capture d'écran utile.
+    validations:
+      required: false
