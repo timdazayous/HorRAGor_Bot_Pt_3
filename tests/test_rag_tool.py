@@ -1,51 +1,28 @@
 """
 Tests unitaires — src/tools/rag_tool.py
 
-Aucune connexion réelle à Supabase ni chargement du modèle FAISS : tout est
-mocké (psycopg2, retriever) pour des tests rapides et déterministes.
+Aucune connexion réelle à db-api/Supabase ni chargement du modèle FAISS :
+tout est mocké (src.tools.rag_tool.db_request, retriever) pour des tests
+rapides et déterministes.
 """
 import numpy as np
-import pytest
 
 from src.tools import rag_tool
 
 
-class FakeCursor:
-    def __init__(self, fetchone_result=None, fetchall_result=None):
-        self._fetchone_result = fetchone_result
-        self._fetchall_result = fetchall_result or []
+class FakeResponse:
+    """Imite juste assez httpx.Response pour les call sites de rag_tool.py."""
 
-    def __enter__(self):
-        return self
+    def __init__(self, status_code=200, json_body=None):
+        self.status_code = status_code
+        self._json_body = json_body
 
-    def __exit__(self, *exc):
-        return False
+    def json(self):
+        return self._json_body
 
-    def execute(self, *args, **kwargs):
-        pass
-
-    def fetchone(self):
-        return self._fetchone_result
-
-    def fetchall(self):
-        return self._fetchall_result
-
-
-class FakeConnection:
-    def __init__(self, cursor: FakeCursor):
-        self._cursor = cursor
-
-    def cursor(self, *args, **kwargs):
-        return self._cursor
-
-    def close(self):
-        pass
-
-
-@pytest.fixture(autouse=True)
-def no_real_network(monkeypatch):
-    """Empêche tout test de cette suite de toucher au réseau/DB par erreur."""
-    monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://fake:fake@localhost/fake")
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
 
 
 class TestMatchExactMovie:
@@ -55,23 +32,21 @@ class TestMatchExactMovie:
             "overview": "Jack Torrance devient gardien d'un hôtel isolé.",
             "genres": ["Horror", "Thriller"], "tmdb_score": 8.2, "imdb_score": 8.4,
         }
-        fake_conn = FakeConnection(FakeCursor(fetchone_result=row))
-        monkeypatch.setattr(rag_tool, "_get_conn", lambda: fake_conn)
+        monkeypatch.setattr(rag_tool, "db_request", lambda method, path, **kw: FakeResponse(200, row))
 
         result = rag_tool._match_exact_movie("Shining")
 
         assert result == row
 
     def test_no_row_returns_none(self, monkeypatch):
-        fake_conn = FakeConnection(FakeCursor(fetchone_result=None))
-        monkeypatch.setattr(rag_tool, "_get_conn", lambda: fake_conn)
+        monkeypatch.setattr(rag_tool, "db_request", lambda method, path, **kw: FakeResponse(404))
 
         assert rag_tool._match_exact_movie("Film inexistant") is None
 
     def test_db_error_returns_none(self, monkeypatch):
-        def _raise():
-            raise ConnectionError("DB down")
-        monkeypatch.setattr(rag_tool, "_get_conn", _raise)
+        def _raise(method, path, **kw):
+            raise ConnectionError("db-api down")
+        monkeypatch.setattr(rag_tool, "db_request", _raise)
 
         assert rag_tool._match_exact_movie("The Shining") is None
 
@@ -101,8 +76,7 @@ class TestGetSurvivalContext:
             "genres": ["Horror", "Thriller"],
             "horror_keywords": ["blood", "ghost", "axe"], "richness_score": 80,
         }
-        fake_conn = FakeConnection(FakeCursor(fetchone_result=row))
-        monkeypatch.setattr(rag_tool, "_get_conn", lambda: fake_conn)
+        monkeypatch.setattr(rag_tool, "db_request", lambda method, path, **kw: FakeResponse(200, row))
 
         result = rag_tool.get_survival_context("The Shining")
 
@@ -115,16 +89,14 @@ class TestGetSurvivalContext:
             "title": "Obscure Movie", "original_title": None, "year": 2020,
             "overview": "Synopsis.", "genres": [], "horror_keywords": None, "richness_score": None,
         }
-        fake_conn = FakeConnection(FakeCursor(fetchone_result=row))
-        monkeypatch.setattr(rag_tool, "_get_conn", lambda: fake_conn)
+        monkeypatch.setattr(rag_tool, "db_request", lambda method, path, **kw: FakeResponse(200, row))
 
         result = rag_tool.get_survival_context("Obscure Movie")
 
         assert "Éléments d'horreur clés" not in result["context"]
 
     def test_not_found_is_incomplete(self, monkeypatch):
-        fake_conn = FakeConnection(FakeCursor(fetchone_result=None))
-        monkeypatch.setattr(rag_tool, "_get_conn", lambda: fake_conn)
+        monkeypatch.setattr(rag_tool, "db_request", lambda method, path, **kw: FakeResponse(404))
 
         result = rag_tool.get_survival_context("Film inexistant")
 
@@ -132,9 +104,9 @@ class TestGetSurvivalContext:
         assert result["matched_title"] is None
 
     def test_db_error_is_incomplete(self, monkeypatch):
-        def _raise():
-            raise ConnectionError("DB down")
-        monkeypatch.setattr(rag_tool, "_get_conn", _raise)
+        def _raise(method, path, **kw):
+            raise ConnectionError("db-api down")
+        monkeypatch.setattr(rag_tool, "db_request", _raise)
 
         result = rag_tool.get_survival_context("The Shining")
 
@@ -143,10 +115,8 @@ class TestGetSurvivalContext:
 
 class TestCalculateMovieAge:
     def test_computes_age_from_release_date(self, monkeypatch):
-        from datetime import date
-        row = {"title": "The Shining", "original_title": "The Shining", "release_date": date(1980, 5, 23)}
-        fake_conn = FakeConnection(FakeCursor(fetchone_result=row))
-        monkeypatch.setattr(rag_tool, "_get_conn", lambda: fake_conn)
+        row = {"title": "The Shining", "original_title": "The Shining", "release_date": "1980-05-23"}
+        monkeypatch.setattr(rag_tool, "db_request", lambda method, path, **kw: FakeResponse(200, row))
 
         result = rag_tool.calculate_movie_age("The Shining")
 
@@ -155,8 +125,7 @@ class TestCalculateMovieAge:
         assert "1980" in result["context"]
 
     def test_not_found_is_incomplete(self, monkeypatch):
-        fake_conn = FakeConnection(FakeCursor(fetchone_result=None))
-        monkeypatch.setattr(rag_tool, "_get_conn", lambda: fake_conn)
+        monkeypatch.setattr(rag_tool, "db_request", lambda method, path, **kw: FakeResponse(404))
 
         result = rag_tool.calculate_movie_age("Film inexistant")
 
@@ -165,8 +134,7 @@ class TestCalculateMovieAge:
 
     def test_missing_release_date_is_incomplete(self, monkeypatch):
         row = {"title": "X", "original_title": None, "release_date": None}
-        fake_conn = FakeConnection(FakeCursor(fetchone_result=row))
-        monkeypatch.setattr(rag_tool, "_get_conn", lambda: fake_conn)
+        monkeypatch.setattr(rag_tool, "db_request", lambda method, path, **kw: FakeResponse(200, row))
 
         result = rag_tool.calculate_movie_age("X")
 
@@ -174,9 +142,9 @@ class TestCalculateMovieAge:
         assert result["matched_title"] == "X"
 
     def test_db_error_is_incomplete(self, monkeypatch):
-        def _raise():
-            raise ConnectionError("DB down")
-        monkeypatch.setattr(rag_tool, "_get_conn", _raise)
+        def _raise(method, path, **kw):
+            raise ConnectionError("db-api down")
+        monkeypatch.setattr(rag_tool, "db_request", _raise)
 
         result = rag_tool.calculate_movie_age("The Shining")
 
@@ -189,9 +157,15 @@ class TestFindSimilarMovies:
         similar_rows = [
             {"id": 2, "title": "Sleepy Hollow", "overview": "...", "year": 1999, "genres": ["Horror"], "tmdb_score": 7.2},
         ]
-        fake_cursor = FakeCursor(fetchone_result=source_row, fetchall_result=similar_rows)
-        fake_conn = FakeConnection(fake_cursor)
-        monkeypatch.setattr(rag_tool, "_get_conn", lambda: fake_conn)
+
+        def fake_db_request(method, path, **kw):
+            if path == "/films/find-source":
+                return FakeResponse(200, source_row)
+            if path == "/films/bulk-by-ids":
+                return FakeResponse(200, similar_rows)
+            raise AssertionError(f"chemin inattendu : {path}")
+
+        monkeypatch.setattr(rag_tool, "db_request", fake_db_request)
 
         fake_model = type("M", (), {"encode": lambda self, texts, normalize_embeddings: np.array([[0.1, 0.2]])})()
         fake_index = type("I", (), {"search": lambda self, vec, k: (np.array([[0.9, 0.8]]), np.array([[0, 1]]))})()
@@ -208,8 +182,7 @@ class TestFindSimilarMovies:
         assert result["context"].count("The Shining") == 1
 
     def test_source_not_found_is_incomplete(self, monkeypatch):
-        fake_conn = FakeConnection(FakeCursor(fetchone_result=None))
-        monkeypatch.setattr(rag_tool, "_get_conn", lambda: fake_conn)
+        monkeypatch.setattr(rag_tool, "db_request", lambda method, path, **kw: FakeResponse(404))
 
         result = rag_tool.find_similar_movies("Film inexistant")
 
@@ -217,9 +190,9 @@ class TestFindSimilarMovies:
         assert result["matched_title"] is None
 
     def test_db_error_is_incomplete(self, monkeypatch):
-        def _raise():
-            raise ConnectionError("DB down")
-        monkeypatch.setattr(rag_tool, "_get_conn", _raise)
+        def _raise(method, path, **kw):
+            raise ConnectionError("db-api down")
+        monkeypatch.setattr(rag_tool, "db_request", _raise)
 
         result = rag_tool.find_similar_movies("The Shining")
 
@@ -300,16 +273,15 @@ class TestRagSearchTheme:
 
 class TestFetchFilmsFromDb:
     def test_empty_ids_short_circuits_without_db_call(self, monkeypatch):
-        def _fail_if_called():
-            raise AssertionError("_get_conn ne devrait pas être appelé pour une liste vide")
-        monkeypatch.setattr(rag_tool, "_get_conn", _fail_if_called)
+        def _fail_if_called(method, path, **kw):
+            raise AssertionError("db_request ne devrait pas être appelé pour une liste vide")
+        monkeypatch.setattr(rag_tool, "db_request", _fail_if_called)
 
         assert rag_tool._fetch_films_from_db([]) == []
 
     def test_preserves_requested_order(self, monkeypatch):
         rows = [{"id": 20, "title": "Second"}, {"id": 10, "title": "First"}]
-        fake_conn = FakeConnection(FakeCursor(fetchall_result=rows))
-        monkeypatch.setattr(rag_tool, "_get_conn", lambda: fake_conn)
+        monkeypatch.setattr(rag_tool, "db_request", lambda method, path, **kw: FakeResponse(200, rows))
 
         result = rag_tool._fetch_films_from_db([10, 20])
 
@@ -317,17 +289,16 @@ class TestFetchFilmsFromDb:
 
     def test_missing_id_is_silently_skipped(self, monkeypatch):
         rows = [{"id": 10, "title": "First"}]
-        fake_conn = FakeConnection(FakeCursor(fetchall_result=rows))
-        monkeypatch.setattr(rag_tool, "_get_conn", lambda: fake_conn)
+        monkeypatch.setattr(rag_tool, "db_request", lambda method, path, **kw: FakeResponse(200, rows))
 
         result = rag_tool._fetch_films_from_db([10, 999])
 
         assert len(result) == 1
 
     def test_db_error_returns_empty_list(self, monkeypatch):
-        def _raise():
-            raise ConnectionError("DB down")
-        monkeypatch.setattr(rag_tool, "_get_conn", _raise)
+        def _raise(method, path, **kw):
+            raise ConnectionError("db-api down")
+        monkeypatch.setattr(rag_tool, "db_request", _raise)
 
         assert rag_tool._fetch_films_from_db([1, 2]) == []
 

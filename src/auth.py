@@ -12,29 +12,20 @@ Schéma :
                     token volé.
 """
 import hashlib
-import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import bcrypt
 import jwt
-import psycopg2
 from loguru import logger
-from psycopg2.extras import RealDictCursor
 
 from src import config
+from src.db_client import db_request
 
 
 class AuthError(Exception):
     """Erreur d'authentification (identifiants invalides, token expiré/révoqué...)."""
-
-
-def get_conn() -> psycopg2.extensions.connection:
-    db_url = os.environ.get("SUPABASE_DB_URL") or os.environ.get("DATABASE_URL")
-    if not db_url:
-        raise ValueError("SUPABASE_DB_URL ou DATABASE_URL non configurée.")
-    return psycopg2.connect(db_url)
 
 
 # ---------------------------------------------------------------------------
@@ -54,17 +45,11 @@ def verify_password(password: str, password_hash: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def get_user_by_username(username: str) -> Optional[dict]:
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                "SELECT id, username, password_hash, role FROM users WHERE username = %s",
-                (username,),
-            )
-            row = cur.fetchone()
-        return dict(row) if row else None
-    finally:
-        conn.close()
+    resp = db_request("GET", f"/users/{username}")
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    return resp.json()
 
 
 def authenticate_user(username: str, password: str) -> dict:
@@ -118,16 +103,16 @@ def create_refresh_token(user_id: int) -> str:
     raw_token = secrets.token_urlsafe(48)
     expires_at = datetime.now(timezone.utc) + timedelta(days=config.REFRESH_TOKEN_EXPIRE_DAYS)
 
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (%s, %s, %s)",
-                (user_id, _hash_token(raw_token), expires_at),
-            )
-        conn.commit()
-    finally:
-        conn.close()
+    resp = db_request(
+        "POST",
+        "/refresh-tokens",
+        json={
+            "user_id": user_id,
+            "token_hash": _hash_token(raw_token),
+            "expires_at": expires_at.isoformat(),
+        },
+    )
+    resp.raise_for_status()
 
     return raw_token
 
@@ -140,32 +125,20 @@ def validate_and_rotate_refresh_token(raw_token: str) -> dict:
     """
     token_hash = _hash_token(raw_token)
 
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT rt.id, rt.user_id, rt.expires_at, rt.revoked, u.username, u.role
-                FROM refresh_tokens rt
-                JOIN users u ON u.id = rt.user_id
-                WHERE rt.token_hash = %s
-                """,
-                (token_hash,),
-            )
-            row = cur.fetchone()
+    resp = db_request("GET", f"/refresh-tokens/by-hash/{token_hash}")
+    if resp.status_code == 404:
+        raise AuthError("Refresh token inconnu")
+    resp.raise_for_status()
+    row = resp.json()
 
-            if not row:
-                raise AuthError("Refresh token inconnu")
-            if row["revoked"]:
-                raise AuthError("Refresh token déjà révoqué")
-            if row["expires_at"] < datetime.now(timezone.utc):
-                raise AuthError("Refresh token expiré")
+    if row["revoked"]:
+        raise AuthError("Refresh token déjà révoqué")
+    # Les dates traversent JSON en ISO 8601 (pas d'objet datetime natif côté HTTP).
+    if datetime.fromisoformat(row["expires_at"]) < datetime.now(timezone.utc):
+        raise AuthError("Refresh token expiré")
 
-            cur.execute("UPDATE refresh_tokens SET revoked = TRUE WHERE id = %s", (row["id"],))
-        conn.commit()
-        return {"user_id": row["user_id"], "username": row["username"], "role": row["role"]}
-    finally:
-        conn.close()
+    db_request("PATCH", f"/refresh-tokens/{row['id']}/revoke").raise_for_status()
+    return {"user_id": row["user_id"], "username": row["username"], "role": row["role"]}
 
 
 def revoke_refresh_token(raw_token: str) -> None:
@@ -176,27 +149,12 @@ def revoke_refresh_token(raw_token: str) -> None:
     token (cohérent avec l'anti-énumération du login).
     """
     token_hash = _hash_token(raw_token)
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE refresh_tokens SET revoked = TRUE WHERE token_hash = %s", (token_hash,))
-        conn.commit()
-    finally:
-        conn.close()
+    db_request("PATCH", f"/refresh-tokens/by-hash/{token_hash}/revoke").raise_for_status()
 
 
 def revoke_all_tokens_for_user(user_id: int) -> None:
     """Révoque toutes les sessions actives (tous les refresh tokens) d'un utilisateur."""
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE refresh_tokens SET revoked = TRUE WHERE user_id = %s AND revoked = FALSE",
-                (user_id,),
-            )
-        conn.commit()
-    finally:
-        conn.close()
+    db_request("PATCH", f"/users/{user_id}/revoke-all-tokens").raise_for_status()
 
 
 # ---------------------------------------------------------------------------

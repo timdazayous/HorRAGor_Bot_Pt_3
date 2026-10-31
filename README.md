@@ -32,6 +32,7 @@ charges MLOps d'origine restent hors périmètre, voir
   - [Configuration](#configuration)
   - [Lancement](#lancement)
   - [Authentification — Refresh Tokens](#authentification--refresh-tokens)
+  - [Couche Données — db-api](#couche-données--db-api)
   - [Monitoring — Langfuse, Prometheus, Grafana, Uptime Kuma](#monitoring--langfuse-prometheus-grafana-uptime-kuma)
   - [Vault & Caddy (stack locale)](#vault--caddy-stack-locale)
   - [Observabilité — Loki](#observabilité--loki)
@@ -346,6 +347,35 @@ catalogue de films.
   compte existe ou non.
 - **Journalisation Loguru** de toute tentative refusée (login échoué, token
   rejeté, 403 admin, quota dépassé) — jamais le mot de passe ni le token en clair.
+
+### Couche Données — db-api
+
+`src/auth.py` et `src/tools/rag_tool.py` ne parlent plus SQL : tout accès à
+Supabase (`users`, `refresh_tokens`, `film`, `genre`, `film_genre`,
+`evaluation`, `analyse_spark`) passe par un micro-service interne dédié,
+**`db-api`** (`src/db_api/`), appelé en HTTP via `src/db_client.py`.
+
+- Dans `docker-compose.yml`, `db-api` est le seul service rattaché **exclusivement**
+  au réseau Docker `db_internal` (`internal: true`) : pas de label Caddy, pas
+  de port publié côté hôte — inatteignable depuis le navigateur ou tout autre
+  service que `api` (qui, lui, est rattaché aux deux réseaux : `default` pour
+  Caddy, `db_internal` pour joindre `db-api`). La frontière de confiance est
+  l'isolation réseau elle-même — pas de secret partagé supplémentaire entre
+  `api` et `db-api` — même logique pédagogique que Vault en mode dev ci-dessous.
+- Supabase reste une base Postgres **hébergée dans le cloud** (pool de
+  connexion `SUPABASE_DB_URL`) : le réseau étanche protège la frontière entre
+  nos propres services, pas le dernier saut public vers Supabase lui-même —
+  ce qui reste hors de portée d'un simple réseau Docker local.
+- `migrations/apply_migrations.py` et les scripts de seed
+  (`seed_service_account.py`, `seed_demo_users.py`) restent en accès SQL
+  direct (exception documentée dans `CLAUDE.md`) : ce sont des scripts
+  d'exploitation (DDL de schéma, bootstrap), pas des requêtes applicatives —
+  ils ne peuvent de toute façon pas dépendre d'une API dont le schéma n'existe
+  pas encore avant la première migration.
+- `Dockerfile.dbapi` mirror volontairement `Dockerfile.api` (même `pyproject.toml`,
+  donc `db-api` embarque des dépendances qu'il n'utilise jamais comme
+  `torch`/`faiss`) — scinder les dépendances par couche aurait été un effort
+  disproportionné pour cet exercice pédagogique.
 
 ### Monitoring — Langfuse, Prometheus, Grafana, Uptime Kuma
 
@@ -737,14 +767,16 @@ ci-dessus.
 
 Le cahier des charges MLOps d'origine ([`Contexte_Part_3_V2.md`](Contexte_Part_3_V2.md))
 va plus loin que ce que couvre `projet-final-horragor.md` (sécurité de l'API
-seule). Trois items restent **non faits**, hors périmètre de tout ce qui
+seule). Deux items restent **non faits**, hors périmètre de tout ce qui
 précède dans ce README :
 
 | Item | Attendu |
 |---|---|
-| **Couche Données** | Base de données encapsulée derrière sa propre API, dans un réseau Docker privé **étanche** (inaccessible de l'extérieur — aujourd'hui l'API parle directement à Supabase). |
 | **Couche Présentation** | UI Streamlit conteneurisée (aujourd'hui lancée hors Docker, `streamlit run app_frontend.py`), communication chiffrée vers l'API. |
 | **Gouvernance** | CI/CD étendu aux 3 couches (Données/Intelligence/Présentation), anomalies trackées en **GitHub Issues**. |
+
+**Couche Données** : fait — voir [Couche Données — db-api](#couche-données--db-api)
+ci-dessus (base encapsulée derrière `db-api`, réseau Docker `db_internal` étanche).
 
 Tout le reste documenté dans ce README (Parties 1-3, sécurité 5/5, Vault/Caddy,
 Loki) est acquis et vérifié en conditions réelles.

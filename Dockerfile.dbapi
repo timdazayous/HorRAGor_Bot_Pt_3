@@ -1,0 +1,31 @@
+# HorRAGor BOT — db-api (Couche Données : encapsulation SQL interne)
+#
+# Mirror volontaire de Dockerfile.api (même base, même uv sync) plutôt qu'un
+# pyproject.toml scindé par couche : db-api hérite donc de dépendances qu'il
+# n'utilise jamais (torch/faiss/sentence-transformers...). Accepté en
+# connaissance de cause pour un exercice pédagogique — voir README.md
+# ("Couche Données") — scinder les dépendances serait un effort disproportionné
+# ici.
+FROM python:3.10-slim
+
+# libpq-dev + gcc + libc6-dev : requis pour compiler psycopg2 depuis les sources
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq-dev gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir uv
+
+WORKDIR /app
+
+# Dépendances d'abord (cache Docker : ne se réinstalle que si pyproject/uv.lock changent)
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project --no-dev
+
+# Pas de migrations/ ici : db-api ne fait que du CRUD applicatif, jamais de
+# DDL de schéma (voir migrations/apply_migrations.py, qui reste en accès
+# SQL direct, hors du périmètre de ce service).
+COPY src/ ./src/
+
+EXPOSE 8100
+
+CMD ["uv", "run", "--no-dev", "uvicorn", "src.db_api.main:app", "--host", "0.0.0.0", "--port", "8100"]

@@ -5,17 +5,16 @@ Interroge le savoir structuré (Supabase) et vectoriel (FAISS) pour extraire
 le lore brut des œuvres d'horreur, en corrigeant les approximations de
 l'utilisateur (recherche floue ILIKE + similarité sémantique en repli).
 """
-import os
 from datetime import date
 from pathlib import Path
 from typing import Optional
 
 import faiss
 import numpy as np
-import psycopg2
 from loguru import logger
-from psycopg2.extras import RealDictCursor
 from sentence_transformers import SentenceTransformer
+
+from src.db_client import db_request
 
 _MOIS_FR = [
     "", "janvier", "février", "mars", "avril", "mai", "juin",
@@ -62,13 +61,6 @@ def reload_index() -> int:
     return _index.ntotal
 
 
-def _get_conn() -> psycopg2.extensions.connection:
-    db_url = os.environ.get("SUPABASE_DB_URL") or os.environ.get("DATABASE_URL")
-    if not db_url:
-        raise ValueError("SUPABASE_DB_URL ou DATABASE_URL non configurée.")
-    return psycopg2.connect(db_url)
-
-
 # ---------------------------------------------------------------------------
 # Niveau 1 — Correspondance exacte/floue (corrige les approximations du titre)
 # ---------------------------------------------------------------------------
@@ -76,44 +68,15 @@ def _get_conn() -> psycopg2.extensions.connection:
 def _match_exact_movie(movie_name: str) -> Optional[dict]:
     """
     Cherche un film par ILIKE (tolère fautes de frappe partielles et variantes
-    de titre). Retourne les métadonnées complètes si trouvé, sinon None.
+    de titre) via db-api (Couche Données). Retourne les métadonnées complètes
+    si trouvé, sinon None.
     """
     try:
-        conn = _get_conn()
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT
-                    f.title,
-                    f.original_title,
-                    EXTRACT(YEAR FROM f.release_date)::int          AS year,
-                    f.overview,
-                    ARRAY_AGG(DISTINCT g.name)
-                        FILTER (WHERE g.name IS NOT NULL)           AS genres,
-                    MAX(CASE WHEN e.source_name = 'TMDB'
-                        THEN e.score_value END)                     AS tmdb_score,
-                    MAX(CASE WHEN e.source_name = 'IMDB'
-                        THEN e.score_value END)                     AS imdb_score
-                FROM film f
-                LEFT JOIN film_genre fg ON f.id = fg.film_id
-                LEFT JOIN genre g       ON fg.genre_id = g.id
-                LEFT JOIN evaluation e  ON f.id = e.film_id
-                WHERE f.title ILIKE %s OR f.original_title ILIKE %s
-                GROUP BY f.id, f.title, f.original_title, f.release_date,
-                         f.overview, f.popularity
-                ORDER BY
-                    CASE WHEN LOWER(f.title)          = LOWER(%s) THEN 0
-                         WHEN LOWER(f.original_title) = LOWER(%s) THEN 1
-                         ELSE 2
-                    END,
-                    f.popularity DESC NULLS LAST
-                LIMIT 1
-                """,
-                (f"%{movie_name}%", f"%{movie_name}%", movie_name, movie_name)
-            )
-            row = cur.fetchone()
-        conn.close()
-        return dict(row) if row else None
+        resp = db_request("GET", "/films/search", params={"title": movie_name})
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
     except Exception as e:
         logger.error(f"Erreur _match_exact_movie({movie_name!r}) : {e}")
         return None
@@ -122,41 +85,11 @@ def _match_exact_movie(movie_name: str) -> Optional[dict]:
 def _get_survival_row(movie_name: str) -> Optional[dict]:
     """Comme _match_exact_movie, mais ajoute les mots-clés horreur (analyse_spark) pour le simulateur de survie."""
     try:
-        conn = _get_conn()
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT
-                    f.title,
-                    f.original_title,
-                    EXTRACT(YEAR FROM f.release_date)::int          AS year,
-                    f.overview,
-                    ARRAY_AGG(DISTINCT g.name)
-                        FILTER (WHERE g.name IS NOT NULL)           AS genres,
-                    -- Sous-requête scalaire plutôt qu'un JOIN + GROUP BY : le
-                    -- type JSON/JSONB n'a pas d'opérateur d'égalité, donc
-                    -- horror_keywords ne peut pas figurer dans un GROUP BY.
-                    (SELECT horror_keywords FROM analyse_spark WHERE film_id = f.id) AS horror_keywords,
-                    (SELECT richness_score  FROM analyse_spark WHERE film_id = f.id) AS richness_score
-                FROM film f
-                LEFT JOIN film_genre fg   ON f.id = fg.film_id
-                LEFT JOIN genre g         ON fg.genre_id = g.id
-                WHERE f.title ILIKE %s OR f.original_title ILIKE %s
-                GROUP BY f.id, f.title, f.original_title, f.release_date,
-                         f.overview, f.popularity
-                ORDER BY
-                    CASE WHEN LOWER(f.title)          = LOWER(%s) THEN 0
-                         WHEN LOWER(f.original_title) = LOWER(%s) THEN 1
-                         ELSE 2
-                    END,
-                    f.popularity DESC NULLS LAST
-                LIMIT 1
-                """,
-                (f"%{movie_name}%", f"%{movie_name}%", movie_name, movie_name)
-            )
-            row = cur.fetchone()
-        conn.close()
-        return dict(row) if row else None
+        resp = db_request("GET", "/films/survival", params={"title": movie_name})
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
     except Exception as e:
         logger.error(f"Erreur _get_survival_row({movie_name!r}) : {e}")
         return None
@@ -209,24 +142,12 @@ def calculate_movie_age(movie_name: str) -> dict:
     Même forme de retour que rag_search : { context, is_complete, matched_title }.
     """
     try:
-        conn = _get_conn()
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT title, original_title, release_date FROM film
-                WHERE title ILIKE %s OR original_title ILIKE %s
-                ORDER BY
-                    CASE WHEN LOWER(title)          = LOWER(%s) THEN 0
-                         WHEN LOWER(original_title) = LOWER(%s) THEN 1
-                         ELSE 2
-                    END,
-                    popularity DESC NULLS LAST
-                LIMIT 1
-                """,
-                (f"%{movie_name}%", f"%{movie_name}%", movie_name, movie_name)
-            )
-            row = cur.fetchone()
-        conn.close()
+        resp = db_request("GET", "/films/age", params={"title": movie_name})
+        if resp.status_code == 404:
+            row = None
+        else:
+            resp.raise_for_status()
+            row = resp.json()
     except Exception as e:
         logger.error(f"Erreur calculate_movie_age({movie_name!r}) : {e}")
         return {"context": f"Impossible de calculer l'âge de « {movie_name} ».", "is_complete": False, "matched_title": None}
@@ -239,7 +160,8 @@ def calculate_movie_age(movie_name: str) -> dict:
             "is_complete": False, "matched_title": row["title"],
         }
 
-    release = row["release_date"]
+    # release_date traverse JSON en ISO 8601 (pas de `date` natif côté HTTP).
+    release = date.fromisoformat(row["release_date"])
     today = date.today()
     age = today.year - release.year - ((today.month, today.day) < (release.month, release.day))
 
@@ -285,29 +207,9 @@ def _fetch_films_from_db(film_ids: list[int]) -> list[dict]:
     if not film_ids:
         return []
     try:
-        conn = _get_conn()
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT
-                    f.id, f.title, f.overview,
-                    EXTRACT(YEAR FROM f.release_date)::int          AS year,
-                    ARRAY_AGG(DISTINCT g.name)
-                        FILTER (WHERE g.name IS NOT NULL)           AS genres,
-                    MAX(CASE WHEN e.source_name = 'TMDB'
-                        THEN e.score_value END)                     AS tmdb_score
-                FROM film f
-                LEFT JOIN film_genre fg ON f.id = fg.film_id
-                LEFT JOIN genre g       ON fg.genre_id = g.id
-                LEFT JOIN evaluation e  ON f.id = e.film_id
-                WHERE f.id = ANY(%s)
-                GROUP BY f.id, f.title, f.overview, f.release_date
-                """,
-                (film_ids,)
-            )
-            rows = cur.fetchall()
-        conn.close()
-        rows_by_id = {r["id"]: dict(r) for r in rows}
+        resp = db_request("POST", "/films/bulk-by-ids", json={"ids": film_ids})
+        resp.raise_for_status()
+        rows_by_id = {r["id"]: r for r in resp.json()}
         return [rows_by_id[fid] for fid in film_ids if fid in rows_by_id]
     except Exception as e:
         logger.error(f"Erreur _fetch_films_from_db : {e}")
@@ -350,24 +252,12 @@ def find_similar_movies(movie_name: str, k: int = 5) -> dict:
     FAISS sur les synopsis). Même forme de retour que rag_search.
     """
     try:
-        conn = _get_conn()
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT id, title, overview FROM film
-                WHERE title ILIKE %s OR original_title ILIKE %s
-                ORDER BY
-                    CASE WHEN LOWER(title)          = LOWER(%s) THEN 0
-                         WHEN LOWER(original_title) = LOWER(%s) THEN 1
-                         ELSE 2
-                    END,
-                    popularity DESC NULLS LAST
-                LIMIT 1
-                """,
-                (f"%{movie_name}%", f"%{movie_name}%", movie_name, movie_name)
-            )
-            row = cur.fetchone()
-        conn.close()
+        resp = db_request("GET", "/films/find-source", params={"title": movie_name})
+        if resp.status_code == 404:
+            row = None
+        else:
+            resp.raise_for_status()
+            row = resp.json()
     except Exception as e:
         logger.error(f"Erreur find_similar_movies({movie_name!r}) : {e}")
         return {"context": f"Impossible de trouver des films similaires à « {movie_name} ».", "is_complete": False, "matched_title": None}

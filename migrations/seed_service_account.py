@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from src import auth  # noqa: E402
+from src.db_api.db import get_conn  # noqa: E402
 
 DEFAULT_USERNAME = "streamlit-ui"
 
@@ -26,7 +27,10 @@ def seed_service_account(username: str = DEFAULT_USERNAME) -> None:
     password = secrets.token_urlsafe(24)
     password_hash = auth.hash_password(password)
 
-    conn = auth.get_conn()
+    # Seeding est un script d'exploitation (bootstrap), pas une requête
+    # applicative : il reste en accès SQL direct, comme
+    # migrations/apply_migrations.py — cas à part documenté dans CLAUDE.md.
+    conn = get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(

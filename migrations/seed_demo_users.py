@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from src import auth  # noqa: E402
+from src.db_api.db import get_conn  # noqa: E402
 
 DEMO_ACCOUNTS = [
     ("demo-user", "user"),
@@ -27,7 +28,10 @@ DEMO_ACCOUNTS = [
 
 
 def seed_demo_users() -> None:
-    conn = auth.get_conn()
+    # Seeding est un script d'exploitation (bootstrap), pas une requête
+    # applicative : il reste en accès SQL direct, comme
+    # migrations/apply_migrations.py — cas à part documenté dans CLAUDE.md.
+    conn = get_conn()
     try:
         for username, role in DEMO_ACCOUNTS:
             password = secrets.token_urlsafe(24)

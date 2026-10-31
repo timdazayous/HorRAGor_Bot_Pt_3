@@ -52,3 +52,8 @@ REFRESH_TOKEN_EXPIRE_DAYS   = int(os.environ.get("REFRESH_TOKEN_EXPIRE_DAYS", 7)
 ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "http://localhost:8501")  # IHM Streamlit
 RATE_LIMIT_LOGIN_MAX_ATTEMPTS   = int(os.environ.get("RATE_LIMIT_LOGIN_MAX_ATTEMPTS", 5))
 RATE_LIMIT_LOGIN_WINDOW_SECONDS = int(os.environ.get("RATE_LIMIT_LOGIN_WINDOW_SECONDS", 60))
+
+# Couche Données — micro-service interne qui encapsule les accès SQL à
+# Supabase (src/db_api/). Pas fail-closed : un défaut local raisonnable
+# suffit, ce n'est pas un secret.
+DB_API_URL = os.environ.get("DB_API_URL", "http://localhost:8100")

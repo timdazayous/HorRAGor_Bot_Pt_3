@@ -1,9 +1,11 @@
 """
 Tests unitaires — src/auth.py (authentification par Refresh Tokens)
 
-Aucune connexion réelle à Supabase : psycopg2 est mocké (mêmes fakes que
-tests/test_rag_tool.py). Le flux réel a été validé manuellement contre la
-vraie base au moment de l'implémentation.
+Aucune connexion réelle à db-api/Supabase : src.auth.db_request (le seul
+point de sortie HTTP vers le micro-service db-api, Couche Données) est
+mocké. Le flux réel a été validé manuellement contre la vraie base au
+moment de l'implémentation initiale, et de nouveau après le passage à
+db-api (voir test_e2e.py pour le scénario de bout en bout).
 """
 from datetime import datetime, timedelta, timezone
 
@@ -13,42 +15,19 @@ import pytest
 from src import auth, config
 
 
-class FakeCursor:
-    def __init__(self, fetchone_result=None):
-        self._fetchone_result = fetchone_result
-        self.executed = []
+class FakeResponse:
+    """Imite juste assez httpx.Response pour les call sites de src/auth.py."""
 
-    def __enter__(self):
-        return self
+    def __init__(self, status_code=200, json_body=None):
+        self.status_code = status_code
+        self._json_body = json_body
 
-    def __exit__(self, *exc):
-        return False
+    def json(self):
+        return self._json_body
 
-    def execute(self, query, params=None):
-        self.executed.append((query, params))
-
-    def fetchone(self):
-        return self._fetchone_result
-
-
-class FakeConnection:
-    def __init__(self, cursor: FakeCursor):
-        self._cursor = cursor
-        self.committed = False
-
-    def cursor(self, *args, **kwargs):
-        return self._cursor
-
-    def commit(self):
-        self.committed = True
-
-    def close(self):
-        pass
-
-
-@pytest.fixture(autouse=True)
-def no_real_network(monkeypatch):
-    monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://fake:fake@localhost/fake")
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
 
 
 class TestPasswordHashing:
@@ -111,60 +90,64 @@ class TestAccessToken:
 class TestGetUserByUsername:
     def test_found(self, monkeypatch):
         row = {"id": 1, "username": "streamlit-ui", "password_hash": "hash", "role": "user"}
-        monkeypatch.setattr(auth, "get_conn", lambda: FakeConnection(FakeCursor(fetchone_result=row)))
+        monkeypatch.setattr(auth, "db_request", lambda method, path, **kw: FakeResponse(200, row))
 
         user = auth.get_user_by_username("streamlit-ui")
 
         assert user == row
 
     def test_not_found(self, monkeypatch):
-        monkeypatch.setattr(auth, "get_conn", lambda: FakeConnection(FakeCursor(fetchone_result=None)))
+        monkeypatch.setattr(auth, "db_request", lambda method, path, **kw: FakeResponse(404))
 
         assert auth.get_user_by_username("ghost") is None
 
 
 class TestCreateRefreshToken:
-    def test_inserts_and_commits(self, monkeypatch):
-        fake_cursor = FakeCursor()
-        fake_conn = FakeConnection(fake_cursor)
-        monkeypatch.setattr(auth, "get_conn", lambda: fake_conn)
+    def test_inserts_and_returns_raw_token(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            auth, "db_request",
+            lambda method, path, **kw: calls.append((method, path, kw)) or FakeResponse(201, {"status": "created"}),
+        )
 
         raw_token = auth.create_refresh_token(user_id=1)
 
         assert isinstance(raw_token, str) and len(raw_token) > 20
-        assert any("INSERT INTO refresh_tokens" in q for q, _ in fake_cursor.executed)
-        assert fake_conn.committed is True
+        method, path, kw = calls[0]
+        assert method == "POST" and path == "/refresh-tokens"
+        assert kw["json"]["user_id"] == 1
 
 
 class TestRevokeRefreshToken:
-    def test_revokes_and_commits(self, monkeypatch):
-        fake_cursor = FakeCursor()
-        fake_conn = FakeConnection(fake_cursor)
-        monkeypatch.setattr(auth, "get_conn", lambda: fake_conn)
+    def test_revokes(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            auth, "db_request",
+            lambda method, path, **kw: calls.append((method, path)) or FakeResponse(200, {"status": "revoked"}),
+        )
 
         auth.revoke_refresh_token("some-raw-refresh-token")
 
-        assert any("UPDATE refresh_tokens" in q for q, _ in fake_cursor.executed)
-        assert fake_conn.committed is True
+        assert calls[0][0] == "PATCH" and "/revoke" in calls[0][1]
 
     def test_is_idempotent_on_unknown_token(self, monkeypatch):
         """Pas d'exception si le token est déjà révoqué/inconnu (anti-énumération)."""
-        fake_conn = FakeConnection(FakeCursor())
-        monkeypatch.setattr(auth, "get_conn", lambda: fake_conn)
+        monkeypatch.setattr(auth, "db_request", lambda method, path, **kw: FakeResponse(200, {"status": "revoked"}))
 
         auth.revoke_refresh_token("never-issued-token")  # ne lève pas
 
 
 class TestRevokeAllTokensForUser:
-    def test_revokes_and_commits(self, monkeypatch):
-        fake_cursor = FakeCursor()
-        fake_conn = FakeConnection(fake_cursor)
-        monkeypatch.setattr(auth, "get_conn", lambda: fake_conn)
+    def test_revokes(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            auth, "db_request",
+            lambda method, path, **kw: calls.append((method, path)) or FakeResponse(200, {"status": "revoked"}),
+        )
 
         auth.revoke_all_tokens_for_user(user_id=1)
 
-        assert any("UPDATE refresh_tokens" in q for q, _ in fake_cursor.executed)
-        assert fake_conn.committed is True
+        assert calls[0][0] == "PATCH" and "revoke-all-tokens" in calls[0][1]
 
 
 class TestAuthenticateUser:
@@ -195,23 +178,29 @@ class TestRefreshTokenLifecycle:
     def test_valid_unexpired_token_succeeds_and_gets_revoked(self, monkeypatch):
         row = {
             "id": 42, "user_id": 1, "revoked": False,
-            "expires_at": datetime.now(timezone.utc) + timedelta(days=1),
+            # Comme db-api, sérialisé en ISO 8601 (traversée JSON).
+            "expires_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
             "username": "streamlit-ui", "role": "user",
         }
-        fake_cursor = FakeCursor(fetchone_result=row)
-        fake_conn = FakeConnection(fake_cursor)
-        monkeypatch.setattr(auth, "get_conn", lambda: fake_conn)
+        calls = []
+
+        def fake_db_request(method, path, **kw):
+            calls.append((method, path))
+            if method == "GET":
+                return FakeResponse(200, row)
+            return FakeResponse(200, {"status": "revoked"})
+
+        monkeypatch.setattr(auth, "db_request", fake_db_request)
 
         result = auth.validate_and_rotate_refresh_token("some-raw-token")
 
         assert result == {"user_id": 1, "username": "streamlit-ui", "role": "user"}
-        # La rotation doit avoir émis un UPDATE ... revoked = TRUE
-        assert any("UPDATE refresh_tokens" in q for q, _ in fake_cursor.executed)
-        assert fake_conn.committed is True
+        # La rotation doit avoir émis un PATCH .../revoke après le GET.
+        assert calls[0][0] == "GET"
+        assert calls[1] == ("PATCH", "/refresh-tokens/42/revoke")
 
     def test_unknown_token_raises(self, monkeypatch):
-        fake_conn = FakeConnection(FakeCursor(fetchone_result=None))
-        monkeypatch.setattr(auth, "get_conn", lambda: fake_conn)
+        monkeypatch.setattr(auth, "db_request", lambda method, path, **kw: FakeResponse(404))
 
         with pytest.raises(auth.AuthError, match="inconnu"):
             auth.validate_and_rotate_refresh_token("never-issued")
@@ -219,11 +208,10 @@ class TestRefreshTokenLifecycle:
     def test_already_revoked_token_raises(self, monkeypatch):
         row = {
             "id": 1, "user_id": 1, "revoked": True,
-            "expires_at": datetime.now(timezone.utc) + timedelta(days=1),
+            "expires_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
             "username": "streamlit-ui", "role": "user",
         }
-        fake_conn = FakeConnection(FakeCursor(fetchone_result=row))
-        monkeypatch.setattr(auth, "get_conn", lambda: fake_conn)
+        monkeypatch.setattr(auth, "db_request", lambda method, path, **kw: FakeResponse(200, row))
 
         with pytest.raises(auth.AuthError, match="révoqué"):
             auth.validate_and_rotate_refresh_token("reused-token")
@@ -231,11 +219,10 @@ class TestRefreshTokenLifecycle:
     def test_expired_token_raises(self, monkeypatch):
         row = {
             "id": 1, "user_id": 1, "revoked": False,
-            "expires_at": datetime.now(timezone.utc) - timedelta(days=1),
+            "expires_at": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
             "username": "streamlit-ui", "role": "user",
         }
-        fake_conn = FakeConnection(FakeCursor(fetchone_result=row))
-        monkeypatch.setattr(auth, "get_conn", lambda: fake_conn)
+        monkeypatch.setattr(auth, "db_request", lambda method, path, **kw: FakeResponse(200, row))
 
         with pytest.raises(auth.AuthError, match="expiré"):
             auth.validate_and_rotate_refresh_token("old-token")

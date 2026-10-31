@@ -134,14 +134,50 @@ services:
         required: false # absent au tout premier `up`, avant que vault-agent ne l'ait rendu
     environment:
       LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
+      DB_API_URL: http://db-api:8100
     depends_on:
       langfuse-web:
         condition: service_started
       vault-agent:
         condition: service_completed_successfully
+      db-api:
+        condition: service_started
+    # Rattaché à `default` (routage Caddy/accès aux autres services) ET
+    # `db_internal` (seul moyen d'atteindre db-api). Déclarer `networks:`
+    # explicitement ici retire sinon l'appartenance implicite à `default` —
+    # piège vérifié : sans les deux lignes, Caddy perd silencieusement l'accès.
+    networks:
+      - default
+      - db_internal
     labels:
       - "caddy=http://api.horragor.localhost"
       - "caddy.reverse_proxy={{upstreams 8000}}"
+
+  # =========================================================================
+  # db-api — Couche Données : seul service qui parle SQL à Supabase pour les
+  # requêtes applicatives (src/auth.py et src/tools/rag_tool.py passent par
+  # lui en HTTP, voir src/db_client.py). Réseau `db_internal` uniquement :
+  # pas de label Caddy, pas de port publié côté hôte — inatteignable depuis
+  # le navigateur ou les autres services. Frontière de confiance = isolation
+  # réseau, même logique que Vault en mode dev dans ce projet (pédagogique,
+  # pas un vrai périmètre zero-trust).
+  # =========================================================================
+
+  db-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.dbapi
+    container_name: horragor-db-api
+    restart: unless-stopped
+    env_file:
+      - .env
+      - path: ./vault/rendered/secrets.env
+        required: false # absent au tout premier `up`, avant que vault-agent ne l'ait rendu
+    depends_on:
+      vault-agent:
+        condition: service_completed_successfully
+    networks:
+      - db_internal
 
   # =========================================================================
   # Monitoring — Langfuse (traçage agent LLM)
@@ -379,6 +415,12 @@ services:
     labels:
       - "caddy=http://uptime.horragor.localhost"
       - "caddy.reverse_proxy={{upstreams 3001}}"
+
+networks:
+  # Pas de `default:` ici — Compose le garde automatiquement du moment qu'un
+  # service le liste explicitement dans ses propres `networks:` (cf. `api`).
+  db_internal:
+    internal: true # aucune route vers l'extérieur du réseau Docker ni vers Internet
 
 volumes:
   caddy_data:
