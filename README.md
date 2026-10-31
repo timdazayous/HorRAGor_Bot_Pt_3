@@ -192,7 +192,7 @@ dessinée à la main) est disponible dans la
 | Front-End | Streamlit — thème dark horror animé |
 | Embeddings | `sentence-transformers/all-MiniLM-L6-v2` |
 | Mémoire vectorielle | FAISS (1 179 vecteurs, en RAM) |
-| Base de données | Supabase (PostgreSQL) via `psycopg2` |
+| Base de données | Supabase (PostgreSQL) — accès SQL encapsulé derrière **db-api** (`psycopg2`, Couche Données) |
 | Monitoring agent | **Langfuse** (auto-hébergé) |
 | Métriques | **Prometheus** + **Grafana** |
 | Supervision disponibilité | **Uptime Kuma** |
@@ -263,9 +263,13 @@ rendre les secrets avant que l'API et Langfuse ne démarrent (détails dans
 (les secrets déjà rendus sont toujours sur disque), `docker compose up -d`
 seul suffit.
 
-Lève l'API, Langfuse, Prometheus, Grafana, Uptime Kuma, Vault et Caddy.
-Plus aucun service n'expose de port direct : tout se joint par sous-domaine
-via Caddy (`http://api.horragor.localhost`, etc.) — voir la section suivante.
+Lève l'API, db-api (Couche Données), l'IHM Streamlit conteneurisée (Couche
+Présentation), Langfuse, Prometheus, Grafana, Uptime Kuma, Vault et Caddy.
+Plus aucun service proxifié n'expose de port direct : tout se joint par
+sous-domaine via Caddy (`http://api.horragor.localhost`,
+`http://frontend.horragor.localhost`, etc.) — voir la section suivante.
+`db-api` reste volontairement injoignable de l'extérieur (réseau Docker
+`db_internal` étanche, voir [Couche Données — db-api](#couche-données--db-api)).
 
 ### Authentification — Refresh Tokens
 
@@ -713,12 +717,17 @@ HorRAGor_Bot_Pt_3/
 │   ├── main.py                        # API FastAPI — endpoint /chat, branche le graphe
 │   ├── config.py                      # Configuration LLM (Groq) et chemins
 │   ├── auth.py                        # Authentification par Refresh Tokens (rôles, rotation, révocation)
+│   ├── db_client.py                   # Client HTTP partagé vers db-api (db_request)
+│   ├── db_api/                        # Couche Données — micro-service interne (seul accès SQL applicatif)
+│   │   ├── main.py                    # Endpoints FastAPI (users, refresh-tokens, films)
+│   │   ├── db.py                      # psycopg2.connect — point d'accès unique
+│   │   └── schemas.py                 # Modèles Pydantic des requêtes entrantes
 │   ├── rate_limit.py                  # Rate limiting anti brute-force (/token, /auth/login)
 │   ├── metrics.py                     # Instrumentation Prometheus par agent
 │   ├── logging_config.py              # Journalisation Loguru unifiée
 │   ├── models/state.py                # AgentState — State partagé multi-agent
 │   ├── tools/
-│   │   ├── rag_tool.py                # FAISS + Supabase (recherche, âge, films similaires, simulateur de survie)
+│   │   ├── rag_tool.py                # FAISS + db-api (recherche, âge, films similaires, simulateur de survie)
 │   │   └── scraper_tool.py            # Recherche Wikipedia en direct
 │   └── graph/
 │       ├── nodes.py                   # rag_node / scraper_node / narration_node / judge_node
@@ -729,12 +738,15 @@ HorRAGor_Bot_Pt_3/
 ├── monitoring/                        # Config Prometheus + Promtail + provisioning Grafana (datasources, dashboard, alerting)
 ├── vault/                             # agent-config.hcl + secrets.env.tpl (Vault Agent) — rendered/ généré, gitignored
 ├── scripts/up.sh                      # Démarrage 2 phases (Vault -> reste de la stack)
-├── tests/                             # Tests unitaires Partie 3 + sécurité
+├── tests/                             # Tests unitaires Partie 3 + sécurité + db_api
 ├── test_api.py                        # Tests de contrat API (auth, admin, durcissement inclus)
 ├── test_e2e.py                        # Scénario de bout en bout — couche sécurité, autonome
-├── .github/workflows/ci.yml           # Pipeline CI/CD
-├── docker-compose.yml                 # API + Vault + Caddy + Langfuse + Prometheus + Grafana + Uptime Kuma
+├── .github/workflows/ci.yml           # Pipeline CI/CD (3 couches + report-failure)
+├── .github/ISSUE_TEMPLATE/anomalie.yml # Formulaire de signalement d'anomalie
+├── docker-compose.yml                 # API + db-api + frontend + Vault + Caddy + Langfuse + Prometheus + Grafana + Uptime Kuma
 ├── Dockerfile.api                     # Image de l'API multi-agent (réutilisée par le service vault-seed)
+├── Dockerfile.dbapi                   # Image de db-api (Couche Données)
+├── Dockerfile.frontend                # Image de l'IHM Streamlit (Couche Présentation)
 │
 ├── app/                                # Pipeline d'ingestion (Partie 1 — Data)
 ├── tools/                              # Tools legacy Partie 2 (query_movie_metadata, etc.)
